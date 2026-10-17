@@ -13,12 +13,16 @@
  * strkey into its raw public key bytes.
  */
 
+import { Prisma, type Creator } from "@prisma/client";
 import nacl from "tweetnacl";
 import { createHash, randomBytes } from "crypto";
 import { StrKey } from "@stellar/stellar-sdk";
 import { setAuthNonce, consumeAuthNonce } from "../../redis.js";
 import { db } from "../../db.js";
 import { isValidAccountId } from "@novatip/sdk";
+
+/** Maximum attempts to generate an uncollided temporary slug/jarId for new creators. */
+export const MAX_CREATOR_CREATE_ATTEMPTS = 5;
 
 // ── Challenge ─────────────────────────────────────────────────────────────────
 
@@ -96,24 +100,42 @@ export async function verifyChallenge(
     });
   }
 
-  // Upsert creator record (wallet address is the identity anchor)
-  const existing = await db.creator.findUnique({ where: { walletAddress } });
-  const isNewUser = !existing;
+  // Resolve creator record (wallet address is the identity anchor)
+  let creator = await db.creator.findUnique({ where: { walletAddress } });
+  const isNewUser = !creator;
 
-  if (isNewUser) {
-    // New user — create a bare record; they'll claim a slug in onboarding
-    await db.creator.create({
-      data: {
-        walletAddress,
-        slug: `user_${randomBytes(4).toString("hex")}`, // temporary slug
-        jarId: `@user_${randomBytes(4).toString("hex")}`,
-      },
-    });
+  if (!creator) {
+    // New user — create a bare record; they'll claim a slug in onboarding.
+    // Temporary slug generation can collide, so retry on unique constraint violations up to a bounded limit.
+    let created: Creator | null = null;
+    for (let attempt = 0; attempt < MAX_CREATOR_CREATE_ATTEMPTS; attempt++) {
+      try {
+        const idSuffix = randomBytes(4).toString("hex");
+        created = await db.creator.create({
+          data: {
+            walletAddress,
+            slug: `user_${idSuffix}`,
+            jarId: `@user_${idSuffix}`,
+          },
+        });
+        break;
+      } catch (err) {
+        if (
+          err instanceof Prisma.PrismaClientKnownRequestError &&
+          err.code === "P2002" &&
+          attempt < MAX_CREATOR_CREATE_ATTEMPTS - 1
+        ) {
+          continue;
+        }
+        throw err;
+      }
+    }
+
+    if (!created) {
+      throw new Error("Failed to create creator record.");
+    }
+    creator = created;
   }
-
-  const creator = await db.creator.findUniqueOrThrow({
-    where: { walletAddress },
-  });
 
   const token = signJwt({
     sub: creator.id,
