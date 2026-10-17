@@ -78,6 +78,39 @@ export const config = {
 
   webhooks: {
     /**
+     * How long (in ms) to wait for an endpoint to answer before timing out
+     * and recording a failed delivery. Defaults to 5,000 ms (5s), giving external
+     * endpoints reasonable time to respond without tying up indexer dispatch
+     * workers or socket pools indefinitely.
+     */
+    timeoutMs: optionalInt(
+      "WEBHOOK_TIMEOUT_MS",
+      optionalInt("TIMEOUT_MS", 5_000),
+    ),
+
+    /**
+     * Maximum response body bytes captured and stored in delivery attempt logs.
+     * Defaults to 1,024 bytes (1 KB), keeping enough diagnostics for debugging
+     * failures without letting misbehaved endpoints return megabytes of junk to
+     * bloat the database.
+     */
+    maxBodySize: optionalInt(
+      "WEBHOOK_MAX_BODY_SIZE",
+      optionalInt("MAX_BODY_SIZE", 1_024),
+    ),
+
+    /**
+     * Maximum stored delivery payload size in bytes.
+     * Defaults to 2,048 bytes (2 KB), which easily accommodates standard tip payloads
+     * while trimming oversized variable fields (e.g. long messages) to prevent
+     * historical delivery logs from ballooning storage.
+     */
+    maxPayloadSize: optionalInt(
+      "WEBHOOK_MAX_PAYLOAD_SIZE",
+      optionalInt("MAX_PAYLOAD_SIZE", 2_048),
+    ),
+
+    /**
      * Most webhooks one creator may register. Every enabled endpoint is
      * delivered to on every indexed tip, each with its own timeout and its own
      * delivery row, so this bounds how much outbound work a single tip can

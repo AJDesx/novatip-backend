@@ -53,12 +53,23 @@ export async function sendTipNotification(event: TipEvent): Promise<void> {
     const { Resend } = await import("resend");
     const resend = new Resend(config.resend.apiKey);
 
+    const text = [
+      `Hey ${displayName}!`,
+      "",
+      `Someone just tipped you $${amount} USDC on Novatip.`,
+      "",
+      message,
+      "",
+      `View your dashboard: ${config.appBaseUrl}/dashboard`,
+    ].join("\n");
+
     // Resend reports API failures via the returned `error` rather than by
     // throwing, so the catch below never sees them — check it explicitly.
     const { error } = await resend.emails.send({
       from: config.resend.from,
       to: [creator.email],
       subject: `💸 You received $${amount} USDC on Novatip!`,
+      text,
       html: `
         <h2>Hey ${displayName}!</h2>
         <p>

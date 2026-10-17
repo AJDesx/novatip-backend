@@ -6,12 +6,15 @@
  * depends on it.
  *
  * Security: each delivery is signed with HMAC-SHA256 using the webhook's
- * shared secret. The receiving server can verify:
+ * shared secret and a timestamp to protect against replay attacks:
  *   X-Novatip-Signature: sha256=<hex>
+ *   X-Novatip-Timestamp: <unix-timestamp-in-seconds>
+ * Signed material: `${timestamp}.${body}`
  */
 
 import { createHmac, randomBytes } from "crypto";
 import { db } from "../../db.js";
+import { config } from "../../config.js";
 import type { TipEvent } from "@novatip/sdk";
 import { stroopsToUsdc } from "@novatip/sdk";
 import { logger } from "../../utils/logger.js";
@@ -19,10 +22,6 @@ import { assertWebhookLimit, webhookLimit } from "./limit.js";
 import { notifyWebhookFailure } from "../notifications/webhook-failure.service.js";
 
 const webhookLogger = logger.child({ component: "webhook" });
-
-const TIMEOUT_MS = 5_000;
-const MAX_BODY_SIZE = 1_024; // truncate response log to 1 KB
-const MAX_PAYLOAD_SIZE = 2_048; // bound stored delivery payload to 2 KB
 
 /**
  * Reduce the stored payload to a diagnostic minimum when it exceeds
@@ -149,7 +148,8 @@ async function deliver(
   body: string,
   payload: DeliveryPayload,
 ): Promise<DeliveryOutcome> {
-  const signature = sign(body, webhook.secret);
+  const timestamp = Math.floor(Date.now() / 1000).toString();
+  const signature = sign(body, webhook.secret, timestamp);
 
   let statusCode: number | undefined;
   let responseText: string | undefined;
@@ -157,24 +157,34 @@ async function deliver(
 
   try {
     const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), TIMEOUT_MS);
+    const timer = setTimeout(
+      () => controller.abort(),
+      config.webhooks.timeoutMs,
+    );
 
+    // Delivery does not follow redirects (redirect: "manual"). Webhook URLs are
+    // validated as HTTPS upon registration, but following redirects allows an
+    // endpoint to answer 301/302 to an insecure HTTP URL or internal network
+    // destination (SSRF), carrying the signed payload with it. A redirect is
+    // captured with its 3xx status code and recorded as a failed delivery.
     const res = await fetch(webhook.url, {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
         "X-Novatip-Signature": `sha256=${signature}`,
+        "X-Novatip-Timestamp": timestamp,
         "User-Agent": "Novatip-Webhook/1.0",
       },
       body,
       signal: controller.signal,
+      redirect: "manual",
     }).finally(() => clearTimeout(timer));
 
     statusCode = res.status;
-    responseText = (await res.text()).slice(0, MAX_BODY_SIZE);
+    responseText = (await res.text()).slice(0, config.webhooks.maxBodySize);
     success = res.ok;
   } catch (err) {
-    responseText = String(err).slice(0, MAX_BODY_SIZE);
+    responseText = String(err).slice(0, config.webhooks.maxBodySize);
     success = false;
   }
 
@@ -187,7 +197,7 @@ async function deliver(
       webhookId: webhook.id,
       statusCode: statusCode ?? null,
       success,
-      payload: boundPayload(payload, MAX_PAYLOAD_SIZE),
+      payload: boundPayload(payload, config.webhooks.maxPayloadSize),
       response: responseText ?? null,
     },
     select: {
@@ -210,8 +220,18 @@ async function deliver(
   return attempt;
 }
 
-export function sign(body: string, secret: string): string {
-  return createHmac("sha256", secret).update(body).digest("hex");
+/**
+ * Compute HMAC-SHA256 signature for a webhook delivery.
+ * When timestamp is provided, the signed material is `${timestamp}.${body}`,
+ * preventing replay attacks. If omitted, only body is signed (legacy mode).
+ */
+export function sign(
+  body: string,
+  secret: string,
+  timestamp?: string | number,
+): string {
+  const signed = timestamp !== undefined ? `${timestamp}.${body}` : body;
+  return createHmac("sha256", secret).update(signed).digest("hex");
 }
 
 // ── Test ping ─────────────────────────────────────────────────────────────────
