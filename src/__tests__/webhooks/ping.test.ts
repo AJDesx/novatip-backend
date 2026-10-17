@@ -135,8 +135,12 @@ describe("the ping request", () => {
     await ping();
 
     const { init } = lastRequest();
+    const timestamp = headerOf(init, "X-Novatip-Timestamp");
+    expect(timestamp).toBeDefined();
+    expect(Number.parseInt(timestamp!, 10)).toBeGreaterThan(0);
+
     const expected = createHmac("sha256", SECRET)
-      .update(String(init.body))
+      .update(`${timestamp}.${init.body}`)
       .digest("hex");
 
     // Same header, same algorithm, same secret — the receiver's existing
@@ -148,8 +152,9 @@ describe("the ping request", () => {
     await ping();
 
     const { init } = lastRequest();
+    const timestamp = headerOf(init, "X-Novatip-Timestamp");
     const wrong = createHmac("sha256", "not-the-secret")
-      .update(String(init.body))
+      .update(`${timestamp}.${init.body}`)
       .digest("hex");
 
     expect(headerOf(init, "X-Novatip-Signature")).not.toBe(`sha256=${wrong}`);
