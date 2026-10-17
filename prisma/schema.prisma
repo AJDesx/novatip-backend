@@ -43,8 +43,12 @@ model Creator {
   webhooks    Webhook[]
   notifications Notification[]
 
-  @@index([walletAddress])
-  @@index([slug])
+  // No @@index([walletAddress]) or @@index([slug]) here: @unique above
+  // already backs each with a unique btree index, so a plain index on the
+  // same column would be an exact duplicate — a second write on every
+  // sign-in and slug claim for a lookup Postgres already serves off the
+  // unique index. See WebhookDelivery's @@index comment for the same
+  // reasoning applied there.
 }
 
 // ── Tip ───────────────────────────────────────────────────────────────────────

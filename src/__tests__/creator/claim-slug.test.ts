@@ -1,0 +1,223 @@
+/**
+ * __tests__/creator/claim-slug.test.ts
+ *
+ * Covers claimSlug's distinct failure paths: the slug format check, the
+ * reserved-slug list, the availability pre-check (SLUG_TAKEN), and
+ * toClaimConflict, which turns a losing race's Prisma P2002 into the same
+ * 409 shape rather than letting it fall through to the global handler's
+ * 500. That mapping was added to fix a real bug — a lost race surfacing as a
+ * 500 — so it is the one most worth pinning here.
+ *
+ * db and redis are mocked so this runs without PostgreSQL or Redis. Only the
+ * two db.creator calls claimSlug actually makes (findUnique for the
+ * pre-check, update for the write) are modelled — getCreatorBySlug and
+ * isSlugAvailable are out of scope for this file.
+ *
+ * config.ts validates required env vars at module load, so those are set
+ * before the module graph is imported.
+ */
+
+import { jest } from "@jest/globals";
+import { Prisma } from "@prisma/client";
+
+process.env["DATABASE_URL"] ??= "postgresql://user:pass@localhost:5432/test";
+process.env["JWT_SECRET"] ??= "test-secret-not-used-for-signing";
+process.env["TIP_SPLITTER_CONTRACT_ID"] ??= `C${"A".repeat(55)}`;
+
+interface FakeCreatorRow {
+  id: string;
+  slug: string;
+  jarId: string;
+  displayName: string | null;
+  bio: string | null;
+  splits: unknown;
+}
+
+const findUniqueMock = jest.fn<
+  (args: { where: { slug: string } }) => Promise<FakeCreatorRow | null>
+>();
+const updateMock = jest.fn<
+  (args: {
+    where: { id: string };
+    data: Record<string, unknown>;
+  }) => Promise<FakeCreatorRow>
+>();
+const cacheInvalidateMock = jest.fn<(key: string) => Promise<void>>();
+
+jest.unstable_mockModule("../../db.js", () => ({
+  db: { creator: { findUnique: findUniqueMock, update: updateMock } },
+  disconnectDb: async (): Promise<void> => undefined,
+}));
+
+jest.unstable_mockModule("../../redis.js", () => ({
+  cacheInvalidate: cacheInvalidateMock,
+  cacheGet: jest.fn(async () => null),
+  cacheSet: jest.fn(async () => undefined),
+  disconnectRedis: async (): Promise<void> => undefined,
+}));
+
+const { claimSlug } = await import("../../modules/creator/creator.service.js");
+
+const CREATOR = "creator_alice";
+const OTHER_CREATOR = "creator_bob";
+
+function row(overrides: Partial<FakeCreatorRow> = {}): FakeCreatorRow {
+  return {
+    id: CREATOR,
+    slug: "alice",
+    jarId: "@alice",
+    displayName: null,
+    bio: null,
+    splits: [],
+    ...overrides,
+  };
+}
+
+/** A Prisma P2002 as it actually arrives: a unique constraint violation. */
+function uniqueConstraintError(
+  target: string[],
+): Prisma.PrismaClientKnownRequestError {
+  return new Prisma.PrismaClientKnownRequestError(
+    `Unique constraint failed on the fields: (${target.join(", ")})`,
+    { code: "P2002", clientVersion: "5.15.0", meta: { target } },
+  );
+}
+
+beforeEach(() => {
+  findUniqueMock.mockReset();
+  updateMock.mockReset();
+  cacheInvalidateMock.mockReset();
+});
+
+// ── Validation ────────────────────────────────────────────────────────────────
+
+describe("an invalid slug", () => {
+  test.each([
+    ["too short", "ab"],
+    ["uppercase", "Alice"],
+    ["a disallowed character", "al.ice"],
+    ["a space", "al ice"],
+  ])("rejects %s with a 400, not a 500", async (_label, slug) => {
+    await expect(
+      claimSlug({ creatorId: CREATOR, slug }),
+    ).rejects.toMatchObject({ statusCode: 400 });
+
+    // Rejected before any query is even attempted.
+    expect(findUniqueMock).not.toHaveBeenCalled();
+    expect(updateMock).not.toHaveBeenCalled();
+  });
+});
+
+describe("a reserved slug", () => {
+  test.each(["api", "admin", "dashboard", "novatip"])(
+    "rejects %s with a 400, not a 500",
+    async (slug) => {
+      await expect(
+        claimSlug({ creatorId: CREATOR, slug }),
+      ).rejects.toMatchObject({ statusCode: 400 });
+
+      expect(findUniqueMock).not.toHaveBeenCalled();
+      expect(updateMock).not.toHaveBeenCalled();
+    },
+  );
+});
+
+// ── Availability pre-check ──────────────────────────────────────────────────────
+
+describe("a slug already taken by another creator", () => {
+  test("rejects with 409 SLUG_TAKEN and never attempts the write", async () => {
+    findUniqueMock.mockResolvedValue(row({ id: OTHER_CREATOR }));
+
+    await expect(
+      claimSlug({ creatorId: CREATOR, slug: "alice" }),
+    ).rejects.toMatchObject({ statusCode: 409, code: "SLUG_TAKEN" });
+
+    expect(updateMock).not.toHaveBeenCalled();
+    expect(cacheInvalidateMock).not.toHaveBeenCalled();
+  });
+});
+
+describe("re-claiming your own slug", () => {
+  test("is not treated as a conflict", async () => {
+    // The pre-check only rejects when the existing row belongs to someone
+    // else — the same creator claiming the slug they already hold (e.g.
+    // resubmitting a profile form) must go through.
+    findUniqueMock.mockResolvedValue(row({ id: CREATOR, slug: "alice" }));
+    updateMock.mockResolvedValue(row({ id: CREATOR, slug: "alice" }));
+
+    await expect(
+      claimSlug({ creatorId: CREATOR, slug: "alice" }),
+    ).resolves.toMatchObject({ slug: "alice" });
+
+    expect(updateMock).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("claiming a free slug", () => {
+  test("writes the claim and invalidates the slug's cache entry", async () => {
+    findUniqueMock.mockResolvedValue(null);
+    updateMock.mockResolvedValue(row({ slug: "newslug", jarId: "@newslug" }));
+
+    await expect(
+      claimSlug({ creatorId: CREATOR, slug: "newslug" }),
+    ).resolves.toMatchObject({ slug: "newslug" });
+
+    expect(cacheInvalidateMock).toHaveBeenCalledWith("creator:newslug");
+  });
+});
+
+// ── The P2002 race ───────────────────────────────────────────────────────────────
+
+describe("a losing race against another claim", () => {
+  test("a P2002 on slug becomes 409 SLUG_TAKEN", async () => {
+    // Passes the pre-check (nobody held the slug a moment ago)...
+    findUniqueMock.mockResolvedValue(null);
+    // ...but loses the write to a concurrent claimant who got there first.
+    updateMock.mockRejectedValue(uniqueConstraintError(["slug"]));
+
+    await expect(
+      claimSlug({ creatorId: CREATOR, slug: "alice" }),
+    ).rejects.toMatchObject({ statusCode: 409, code: "SLUG_TAKEN" });
+
+    // The failed write must not evict a cache entry that was never this
+    // claimant's to invalidate.
+    expect(cacheInvalidateMock).not.toHaveBeenCalled();
+  });
+
+  test("a P2002 on jarId becomes 409 JARID_TAKEN", async () => {
+    findUniqueMock.mockResolvedValue(null);
+    updateMock.mockRejectedValue(uniqueConstraintError(["jarId"]));
+
+    await expect(
+      claimSlug({ creatorId: CREATOR, slug: "alice" }),
+    ).rejects.toMatchObject({ statusCode: 409, code: "JARID_TAKEN" });
+
+    expect(cacheInvalidateMock).not.toHaveBeenCalled();
+  });
+
+  test("any other P2002 still comes back as a 409, not a 500", async () => {
+    // toClaimConflict's test is only "did jarId conflict" — anything else
+    // (an unexpected unique violation on some other column) falls back to
+    // the same SLUG_TAKEN shape rather than being rethrown bare, which is
+    // what would reach the global handler with no statusCode and surface
+    // as a 500.
+    findUniqueMock.mockResolvedValue(null);
+    updateMock.mockRejectedValue(uniqueConstraintError(["id"]));
+
+    await expect(
+      claimSlug({ creatorId: CREATOR, slug: "alice" }),
+    ).rejects.toMatchObject({ statusCode: 409 });
+  });
+
+  test("an error that is not a P2002 passes through untouched", async () => {
+    findUniqueMock.mockResolvedValue(null);
+    const dbDown = new Error("connection terminated unexpectedly");
+    updateMock.mockRejectedValue(dbDown);
+
+    // No statusCode was ever attached — this is exactly what should reach
+    // the global handler and surface as a 500, unlike a real conflict.
+    await expect(
+      claimSlug({ creatorId: CREATOR, slug: "alice" }),
+    ).rejects.toBe(dbDown);
+  });
+});
