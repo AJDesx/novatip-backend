@@ -23,12 +23,47 @@ startIndexer().catch((err) => {
 startDeliveryPruner();
 
 // Graceful shutdown
-const shutdown = async (): Promise<void> => {
-  server.log.info("Shutting down...");
-  stopIndexer();
-  stopDeliveryPruner();
-  await server.close();
-  process.exit(0);
+const SHUTDOWN_TIMEOUT_MS = 10_000;
+
+/**
+ * Set once the first signal arrives, so a second SIGTERM/SIGINT (a common
+ * double-tap from process managers, or an impatient operator) joins the
+ * shutdown already running instead of starting a second one that would race
+ * it for the same database connection and the same indexer loop.
+ */
+let shuttingDown: Promise<void> | null = null;
+
+const shutdown = (): Promise<void> => {
+  if (shuttingDown) return shuttingDown;
+
+  shuttingDown = (async () => {
+    server.log.info("Shutting down...");
+    stopDeliveryPruner();
+
+    // Forces the process to exit even if the indexer's current iteration or
+    // the server's close hooks hang — a stuck shutdown should not block the
+    // exit forever. Cleared below on the normal path.
+    const timer = setTimeout(() => {
+      server.log.error("shutdown timed out — forcing exit");
+      process.exit(1);
+    }, SHUTDOWN_TIMEOUT_MS);
+
+    try {
+      // Waits for the indexer's in-flight iteration — persist, webhooks,
+      // email — to finish before the server's onClose hook below disconnects
+      // Prisma and Redis out from underneath it.
+      await stopIndexer();
+      await server.close();
+      clearTimeout(timer);
+      process.exit(0);
+    } catch (err) {
+      clearTimeout(timer);
+      server.log.error({ err }, "error during shutdown");
+      process.exit(1);
+    }
+  })();
+
+  return shuttingDown;
 };
 
 process.on("SIGTERM", shutdown);

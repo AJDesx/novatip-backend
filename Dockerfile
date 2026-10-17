@@ -47,6 +47,14 @@ COPY --from=builder /app/node_modules/prisma ./node_modules/prisma
 COPY --from=builder /app/node_modules/.bin/prisma ./node_modules/.bin/prisma
 COPY prisma ./prisma
 
+# This process makes outbound requests to creator-supplied webhook URLs, so it
+# should hold no more privilege than it needs. node:20-alpine already ships an
+# unprivileged `node` user; everything above was copied or installed as root,
+# so it needs handing over before dropping to that user. The service writes
+# nothing to disk at runtime, so readability is all that matters here.
+RUN chown -R node:node /app
+USER node
+
 EXPOSE 3001
 
 # Apply any pending migrations, then start the API and indexer.

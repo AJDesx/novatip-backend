@@ -14,7 +14,8 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        node-version: [18, 20]
+        # 20 is what the Dockerfile ships on; 24 is the current LTS line.
+        node-version: [20, 24]
 
     steps:
       - name: Checkout

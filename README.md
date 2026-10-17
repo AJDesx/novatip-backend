@@ -12,7 +12,7 @@ Email: Resend, QR: qrcode, Events: @novatip/sdk
 
 ## Local Development
 
-Prerequisites: Node.js >= 18, Docker + Docker Compose
+Prerequisites: Node.js >= 20, Docker + Docker Compose
 
 1. Install: npm install
 2. Copy env: cp .env.example .env
@@ -444,6 +444,23 @@ copy is updated, and a secret being rotated because it leaked needs the old one
 dead at once. To rotate without dropping a tip, disable the webhook first
 (PATCH /webhooks/:id), update both sides, then re-enable — and POST
 /webhooks/:id/ping to confirm the new secret verifies before you do.
+
+## Webhook Failure Notifications
+
+A failed delivery writes a WEBHOOK_FAILED Notification row (payload:
+`webhookId`, `url`, `statusCode`) in addition to the WebhookDelivery row every
+attempt already gets — otherwise a receiver that has been down for a week is
+only visible to a creator who thinks to call GET
+/webhooks/:id/deliveries. A successful delivery writes nothing here.
+
+One tip can reach several enabled webhooks, and a receiver that stays down
+turns every subsequent tip into another failure, so the notification is
+throttled to at most one per webhook per hour rather than one per tip — the
+window is counted from the last notification actually written for that
+webhook, not from the first failure. Writing the notification can never fail
+the dispatch: an error here is logged and swallowed (src/modules/notifications/
+webhook-failure.service.ts), the same as a bad webhook URL itself cannot take
+down the indexer.
 
 ## Webhook Delivery Retention
 

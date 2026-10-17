@@ -63,13 +63,28 @@ function resolveNetwork(): NetworkConfig {
 let running = false;
 
 /**
- * Start the indexer loop. Safe to call once at server startup.
- * Logs errors but never crashes the process.
+ * The currently running loop, so stopIndexer() has something to await and a
+ * second startIndexer() call while one is already in flight joins it rather
+ * than starting a competing loop.
  */
-export async function startIndexer(): Promise<void> {
-  if (running) return;
+let loop: Promise<void> | null = null;
+
+/**
+ * Start the indexer loop. Safe to call more than once — a call made while
+ * the loop is already running returns the same promise rather than starting
+ * a second one. Logs errors but never crashes the process.
+ */
+export function startIndexer(): Promise<void> {
+  if (loop) return loop;
   running = true;
 
+  loop = runLoop().finally(() => {
+    loop = null;
+  });
+  return loop;
+}
+
+async function runLoop(): Promise<void> {
   const network = resolveNetwork();
   const contractId = config.stellar.tipSplitterContractId;
 
@@ -170,14 +185,27 @@ export async function startIndexer(): Promise<void> {
 
     await sleep(POLL_INTERVAL_MS);
   }
+
+  indexerLogger.info("stopped");
 }
 
 /**
- * Stop the indexer loop gracefully.
+ * Stop the indexer loop and wait for its current iteration to finish.
+ *
+ * Setting the flag alone does not stop anything in progress: the loop only
+ * checks `running` between iterations, so a tip that is mid-way through
+ * handleEvent (persist, then webhooks, then email) when this is called keeps
+ * running on whatever db connection and clients were live when it started.
+ * The caller must await the returned promise before tearing either down —
+ * shutdown() in app.ts is the only caller today. Resolving the sleep between
+ * iterations sooner is a separate concern (#81); this only guarantees the
+ * caller does not close anything out from underneath an iteration already
+ * under way.
  */
-export function stopIndexer(): void {
+export function stopIndexer(): Promise<void> {
   running = false;
-  indexerLogger.info("stopped");
+  indexerLogger.info("stopping");
+  return loop ?? Promise.resolve();
 }
 
 // ── Event handler ─────────────────────────────────────────────────────────────
