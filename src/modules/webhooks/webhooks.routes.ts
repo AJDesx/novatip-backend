@@ -24,17 +24,20 @@ import {
   rotateWebhookSecret,
   deleteWebhook,
   generateWebhookSecret,
+  MIN_WEBHOOK_SECRET_LENGTH,
   DEFAULT_DELIVERY_PAGE_SIZE,
   MAX_DELIVERY_PAGE_SIZE,
 } from "./webhooks.service.js";
 
 /**
  * A caller-supplied signing secret. Shared by registration and rotation so
- * the two cannot drift on what they accept. 16 characters is the floor for
- * something used as an HMAC key; omit the field and the server mints one with
- * 192 bits of entropy instead, which is the better choice.
+ * the two cannot drift on what they accept. MIN_WEBHOOK_SECRET_LENGTH is the
+ * floor for something used as an HMAC key — the same floor the service
+ * itself enforces, so this is a fast, friendly rejection rather than the only
+ * one; omit the field and the server mints one with 192 bits of entropy
+ * instead, which is the better choice.
  */
-const webhookSecret = z.string().min(16);
+const webhookSecret = z.string().min(MIN_WEBHOOK_SECRET_LENGTH);
 
 const CreateBody = z.object({
   url: z.string().url(),

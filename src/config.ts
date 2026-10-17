@@ -32,6 +32,23 @@ function optionalInt(key: string, fallback: number): number {
   return parsed;
 }
 
+/**
+ * Read a comma-separated list setting, trimming each entry and dropping
+ * empty ones (a trailing comma or stray whitespace shouldn't produce a ""
+ * entry that then never matches a real origin).
+ */
+function optionalList(key: string, fallback: string[]): string[] {
+  const raw = process.env[key];
+  if (raw === undefined || raw.trim() === "") return fallback;
+
+  return raw
+    .split(",")
+    .map((entry) => entry.trim())
+    .filter((entry) => entry !== "");
+}
+
+const appBaseUrl = optional("APP_BASE_URL", "http://localhost:3000");
+
 export const config = {
   port: parseInt(optional("PORT", "3001"), 10),
   host: optional("HOST", "0.0.0.0"),
@@ -94,5 +111,14 @@ export const config = {
     from: optional("EMAIL_FROM", "tips@novatip.xyz"),
   },
 
-  appBaseUrl: optional("APP_BASE_URL", "http://localhost:3000"),
+  appBaseUrl,
+
+  /**
+   * Origins allowed through CORS in production. The web client deploys to a
+   * platform that gives every preview build its own hostname, so a single
+   * fixed origin can't cover them; set CORS_ALLOWED_ORIGINS to a
+   * comma-separated list to allow more than one. Defaults to just
+   * appBaseUrl so an unconfigured deployment keeps today's behaviour.
+   */
+  corsAllowedOrigins: optionalList("CORS_ALLOWED_ORIGINS", [appBaseUrl]),
 } as const;

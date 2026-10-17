@@ -36,6 +36,7 @@ USDC_CONTRACT_ID - USDC Stellar Asset Contract ID
 INDEXER_START_LEDGER - Ledger to begin indexing from (default: 0)
 RESEND_API_KEY - Resend API key (skip to disable email)
 APP_BASE_URL - Frontend base URL (default: http://localhost:3000)
+CORS_ALLOWED_ORIGINS - Comma-separated origins allowed through CORS in production (default: just APP_BASE_URL; ignored outside production, where any origin is allowed)
 MAX_WEBHOOKS_PER_CREATOR - Most webhooks one creator may register (default: 5, 0 removes the cap)
 WEBHOOK_DELIVERY_RETENTION_DAYS - Prune successful deliveries older than this (default: 30, 0 disables)
 WEBHOOK_DELIVERY_FAILURE_RETENTION_DAYS - Prune failed deliveries older than this (default: 90, 0 disables)
@@ -207,6 +208,13 @@ GET    /webhooks             - List webhooks (JWT)
 POST   /webhooks             - Register webhook (JWT)
 PATCH  /webhooks/:id         - Enable or disable a webhook (JWT)
 DELETE /webhooks/:id         - Remove webhook (JWT)
+
+POST /webhooks takes `{ "url": "...", "secret": "..." }`; `secret` is optional
+and, if omitted, the server mints one with 192 bits of entropy. A
+caller-supplied secret must be at least 16 characters — it is the HMAC key a
+receiver's signature check is only as strong as, so anything shorter is
+rejected with 400 rather than written. The 16-character floor is the same one
+rotation enforces (see Rotating the secret).
 
 POST /webhooks is capped at MAX_WEBHOOKS_PER_CREATOR endpoints per creator
 (default 5). Registering beyond it returns 409 with error.code
