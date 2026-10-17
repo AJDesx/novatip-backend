@@ -7,6 +7,15 @@
 
 import type { TipEvent } from "@novatip/sdk";
 import { db } from "../db.js";
+import { logger } from "../utils/logger.js";
+
+const persistLogger = logger.child({ component: "indexer:persist" });
+
+/**
+ * The IndexerCursor table holds exactly one row by design to track the
+ * indexer's progress across restarts.
+ */
+export const INDEXER_CURSOR_ID = 1;
 
 /**
  * Persist a single TipEvent.
@@ -25,7 +34,11 @@ export async function persistTip(
   });
 
   if (!creator) {
-    // Jar not registered in our DB — skip silently (could be another app)
+    // Jar not registered in our DB — skip (expected if the jar belongs to another application)
+    persistLogger.info(
+      { jarId: event.jarId },
+      "Tip received for unregistered jar; skipping (jar may belong to another application)",
+    );
     return;
   }
 
@@ -50,9 +63,9 @@ export async function persistTip(
  */
 export async function updateCursor(ledger: number): Promise<void> {
   await db.indexerCursor.upsert({
-    where: { id: 1 },
+    where: { id: INDEXER_CURSOR_ID },
     update: { lastLedger: ledger },
-    create: { id: 1, lastLedger: ledger },
+    create: { id: INDEXER_CURSOR_ID, lastLedger: ledger },
   });
 }
 
@@ -61,6 +74,8 @@ export async function updateCursor(ledger: number): Promise<void> {
  * Returns 0 if the cursor has never been set.
  */
 export async function readCursor(): Promise<number> {
-  const cursor = await db.indexerCursor.findUnique({ where: { id: 1 } });
+  const cursor = await db.indexerCursor.findUnique({
+    where: { id: INDEXER_CURSOR_ID },
+  });
   return cursor?.lastLedger ?? 0;
 }
