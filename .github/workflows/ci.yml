@@ -38,6 +38,9 @@ jobs:
       - name: Lint
         run: npm run lint
 
+      - name: Check env var docs
+        run: npm run check:env-docs
+
       - name: Typecheck
         run: npm run typecheck
 
