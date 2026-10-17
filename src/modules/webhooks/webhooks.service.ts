@@ -16,6 +16,7 @@ import type { TipEvent } from "@novatip/sdk";
 import { stroopsToUsdc } from "@novatip/sdk";
 import { logger } from "../../utils/logger.js";
 import { assertWebhookLimit, webhookLimit } from "./limit.js";
+import { notifyWebhookFailure } from "../notifications/webhook-failure.service.js";
 
 const webhookLogger = logger.child({ component: "webhook" });
 
@@ -95,7 +96,10 @@ export interface DeliveryOutcome {
 /**
  * Find all enabled webhooks for the jar's creator and deliver the event.
  * Failures are logged but never thrown — the indexer must not crash on
- * a bad webhook endpoint.
+ * a bad webhook endpoint. A failed delivery also raises a (rate-limited)
+ * WEBHOOK_FAILED notification — see notifyWebhookFailure — so a receiver
+ * that has been down for a while doesn't go unnoticed until someone thinks
+ * to check the delivery history.
  */
 export async function dispatchWebhooks(event: TipEvent): Promise<void> {
   const creator = await db.creator.findUnique({
@@ -119,7 +123,16 @@ export async function dispatchWebhooks(event: TipEvent): Promise<void> {
   const body = JSON.stringify(payload);
 
   await Promise.allSettled(
-    creator.webhooks.map((webhook) => deliver(webhook, body, payload)),
+    creator.webhooks.map(async (webhook) => {
+      const outcome = await deliver(webhook, body, payload);
+      if (!outcome.success) {
+        await notifyWebhookFailure(creator.id, {
+          webhookId: webhook.id,
+          url: webhook.url,
+          statusCode: outcome.statusCode,
+        });
+      }
+    }),
   );
 }
 

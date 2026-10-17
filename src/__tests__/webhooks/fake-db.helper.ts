@@ -46,6 +46,15 @@ export interface FakeDelivery {
   attemptedAt: Date;
 }
 
+export interface FakeNotification {
+  id: string;
+  creatorId: string;
+  type: "TIP_RECEIVED" | "WEBHOOK_FAILED";
+  payload: object;
+  sentAt: Date | null;
+  createdAt: Date;
+}
+
 // ── Argument shapes ───────────────────────────────────────────────────────────
 
 type Select = Record<string, boolean>;
@@ -108,6 +117,7 @@ export interface FakeDb {
   webhooks: Map<string, FakeWebhook>;
   deliveries: FakeDelivery[];
   creators: Map<string, FakeCreator>;
+  notifications: FakeNotification[];
   seedCreator(creator: Partial<FakeCreator> & { id: string }): FakeCreator;
   seedWebhook(
     webhook: Partial<FakeWebhook> & { creatorId: string },
@@ -115,12 +125,16 @@ export interface FakeDb {
   seedDelivery(
     delivery: Partial<FakeDelivery> & { webhookId: string },
   ): FakeDelivery;
+  seedNotification(
+    notification: Partial<FakeNotification> & { creatorId: string },
+  ): FakeNotification;
 }
 
 export function createFakeDb(): FakeDb {
   const webhooks = new Map<string, FakeWebhook>();
   const creators = new Map<string, FakeCreator>();
   const deliveries: FakeDelivery[] = [];
+  const notifications: FakeNotification[] = [];
 
   let sequence = 0;
   const nextId = (prefix: string): string => `${prefix}_${++sequence}`;
@@ -308,6 +322,51 @@ export function createFakeDb(): FakeDb {
         return page.map((row) => project(row, select));
       },
     },
+
+    notification: {
+      create: async ({
+        data,
+      }: {
+        data: {
+          creatorId: string;
+          type: FakeNotification["type"];
+          payload: object;
+          sentAt?: Date | null;
+        };
+      }): Promise<FakeNotification> => {
+        const row: FakeNotification = {
+          id: nextId("notif"),
+          creatorId: data.creatorId,
+          type: data.type,
+          payload: data.payload,
+          sentAt: data.sentAt ?? null,
+          createdAt: tick(),
+        };
+        notifications.push(row);
+        return row;
+      },
+
+      findMany: async ({
+        where,
+        select,
+      }: {
+        where: {
+          creatorId: string;
+          type: FakeNotification["type"];
+          createdAt?: { gte?: Date };
+        };
+        select?: Select;
+      }): Promise<Projected[]> => {
+        const found = notifications.filter(
+          (row) =>
+            row.creatorId === where.creatorId &&
+            row.type === where.type &&
+            (where.createdAt?.gte === undefined ||
+              row.createdAt >= where.createdAt.gte),
+        );
+        return found.map((row) => project(row, select));
+      },
+    },
   };
 
   /**
@@ -331,6 +390,7 @@ export function createFakeDb(): FakeDb {
     webhooks,
     deliveries,
     creators,
+    notifications,
 
     seedCreator(creator) {
       const row: FakeCreator = {
@@ -370,6 +430,19 @@ export function createFakeDb(): FakeDb {
         updatedAt: webhook.updatedAt ?? now,
       };
       webhooks.set(row.id, row);
+      return row;
+    },
+
+    seedNotification(notification) {
+      const row: FakeNotification = {
+        id: notification.id ?? nextId("notif"),
+        creatorId: notification.creatorId,
+        type: notification.type ?? "WEBHOOK_FAILED",
+        payload: notification.payload ?? {},
+        sentAt: notification.sentAt ?? null,
+        createdAt: notification.createdAt ?? tick(),
+      };
+      notifications.push(row);
       return row;
     },
   };
