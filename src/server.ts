@@ -17,21 +17,13 @@ import rateLimit from "@fastify/rate-limit";
 import { config } from "./config.js";
 import { disconnectDb } from "./db.js";
 import { disconnectRedis, redis } from "./redis.js";
+import { buildLoggerOptions } from "./utils/logger.js";
 
 export async function buildServer(): Promise<FastifyInstance> {
   const isProduction = config.nodeEnv === "production";
 
   const server = Fastify({
-    logger: {
-      level: isProduction ? "info" : "debug",
-      // Spread rather than an explicit undefined — see the note in
-      // utils/logger.ts about exactOptionalPropertyTypes.
-      ...(isProduction
-        ? {}
-        : {
-            transport: { target: "pino-pretty", options: { colorize: true } },
-          }),
-    },
+    logger: buildLoggerOptions(isProduction),
   });
 
   // ── Security plugins ──────────────────────────────────────────────────────
@@ -43,8 +35,8 @@ export async function buildServer(): Promise<FastifyInstance> {
   });
 
   await server.register(rateLimit, {
-    max: 100,
-    timeWindow: "1 minute",
+    max: config.rateLimits.global.max,
+    timeWindow: config.rateLimits.global.window,
     redis,
   });
 

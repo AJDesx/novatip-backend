@@ -23,27 +23,35 @@ Prerequisites: Node.js >= 20, Docker + Docker Compose
 
 ## Environment Variables
 
+Every variable below is read in src/config.ts; `npm run check:env-docs` checks
+this list against that file so the two cannot drift apart again.
+
 DATABASE_URL (required) - PostgreSQL connection string
 JWT_SECRET (required) - Secret for signing JWTs
 TIP_SPLITTER_CONTRACT_ID (required) - Deployed contract ID
-REDIS_URL - Redis URL (default: redis://localhost:6379)
 PORT - Server port (default: 3001)
+HOST - Server bind address (default: 0.0.0.0)
+NODE_ENV - development | production (default: development)
+REDIS_URL - Redis URL (default: redis://localhost:6379)
 STELLAR_NETWORK - testnet | mainnet | local (default: testnet)
-SOROBAN_RPC_URL - Soroban RPC endpoint
-HORIZON_URL - Horizon REST endpoint
-NETWORK_PASSPHRASE - Stellar network passphrase
-USDC_CONTRACT_ID - USDC Stellar Asset Contract ID
+SOROBAN_RPC_URL - Soroban RPC endpoint (default: https://soroban-testnet.stellar.org)
+HORIZON_URL - Horizon REST endpoint (default: https://horizon-testnet.stellar.org)
+NETWORK_PASSPHRASE - Stellar network passphrase (default: "Test SDF Network ; September 2015")
+USDC_CONTRACT_ID - USDC Stellar Asset Contract ID (default: CBIELTK6YBZJU5UP2WWQEUCYKLPU6AUNZ2BQ4WWFEIE3USCIHMXQDAMA, the mainnet one, regardless of STELLAR_NETWORK)
 INDEXER_START_LEDGER - Ledger to begin indexing from (default: 0)
-AUTH_CHALLENGE_RATE_LIMIT - Per-IP cap on POST /auth/challenge, req/min (default: 5)
-QR_RATE_LIMIT - Per-IP cap on the QR endpoints, req/min (default: 10)
-RESEND_API_KEY - Resend API key (skip to disable email)
-APP_BASE_URL - Frontend base URL (default: http://localhost:3000)
-CORS_ALLOWED_ORIGINS - Comma-separated origins allowed through CORS in production (default: just APP_BASE_URL; ignored outside production, where any origin is allowed)
 MAX_WEBHOOKS_PER_CREATOR - Most webhooks one creator may register (default: 5, 0 removes the cap)
 WEBHOOK_DELIVERY_RETENTION_DAYS - Prune successful deliveries older than this (default: 30, 0 disables)
 WEBHOOK_DELIVERY_FAILURE_RETENTION_DAYS - Prune failed deliveries older than this (default: 90, 0 disables)
 WEBHOOK_DELIVERY_PRUNE_BATCH_SIZE - Rows deleted per statement (default: 500)
 WEBHOOK_DELIVERY_PRUNE_INTERVAL_MINUTES - How often the pruner runs (default: 60)
+RESEND_API_KEY - Resend API key (default: "", which disables email)
+EMAIL_FROM - From address on tip-notification emails (default: tips@novatip.xyz)
+RATE_LIMIT_MAX - Server-wide request budget per window, for routes with no dedicated limiter (default: 100)
+RATE_LIMIT_WINDOW - Window for RATE_LIMIT_MAX, in @fastify/rate-limit's own format (default: "1 minute")
+AUTH_CHALLENGE_RATE_LIMIT - Per-IP cap on POST /auth/challenge, req/min (default: 5)
+QR_RATE_LIMIT - Per-IP cap on the QR endpoints, req/min (default: 10)
+APP_BASE_URL - Frontend base URL (default: http://localhost:3000)
+CORS_ALLOWED_ORIGINS - Comma-separated origins allowed through CORS in production (default: just APP_BASE_URL; ignored outside production, where any origin is allowed)
 
 ## API Overview  (base: /api/v1)
 
@@ -440,6 +448,58 @@ The secret is returned exactly twice in its life: in the POST /webhooks response
 that created the webhook, and in a POST /webhooks/:id/secret response that
 rotated it. No route reads one back out, so a lost secret cannot be recovered —
 it can only be replaced.
+
+### Verifying a signature
+
+What is signed is the exact bytes of the HTTP request body — the raw
+`Content-Type: application/json` payload as it goes out on the wire, before
+your framework parses it. Verify against those raw bytes, not against
+`JSON.stringify(req.body)` after parsing: re-serialising a parsed object can
+reorder keys or change whitespace, which changes the bytes and breaks a
+signature that was perfectly valid on arrival. Most frameworks need to be
+told explicitly to keep the raw body around for this (Express:
+`express.raw()` or `express.json({ verify })`; Fastify: `rawBody` via
+`@fastify/raw-body` or a custom `preParsing` hook).
+
+Worked example. A real tip delivery sends a body shaped like:
+
+    {"event":"tip.received","jarId":"@alice","from":"GABC2D3EFGHIJKLMNOPQRSTUVWXYZ234567890ABCDEFGHIJKLMN","amount":"2.50","amountRaw":"25000000","message":"Great work!","ledger":123456,"timestamp":"2026-10-17T12:00:00.000Z"}
+
+With the webhook's secret `whsec_3f8a9c2b1d7e4f6a8b9c0d1e2f3a4b5c`, that body
+produces:
+
+    X-Novatip-Signature: sha256=b8c764beeac210154df90d5a95aa8cb504bd44e20e8e64644d866cbb5ef133c3
+
+(`createHmac("sha256", secret).update(body).digest("hex")`, on the raw body
+string above — verify it yourself with the same two inputs if you want to
+check your receiver's implementation against this exact example.)
+
+Compare the computed digest with a constant-time comparison, not `===` or
+`!==`. A plain string comparison returns as soon as it finds the first
+mismatched byte, so how long it takes to reject a forged signature leaks how
+many leading bytes the forgery got right — enough timing samples let an
+attacker recover the correct signature one byte at a time without ever
+knowing the secret. `crypto.timingSafeEqual` always takes the same time
+regardless of where (or whether) the inputs differ:
+
+    import { createHmac, timingSafeEqual } from "crypto";
+
+    function isValidSignature(rawBody: Buffer, header: string | undefined, secret: string): boolean {
+      if (!header?.startsWith("sha256=")) return false;
+
+      const expected = createHmac("sha256", secret).update(rawBody).digest("hex");
+      const provided = header.slice("sha256=".length);
+
+      // timingSafeEqual throws on a length mismatch rather than returning
+      // false, and a forged header is very unlikely to happen to be exactly
+      // 64 hex characters — check that first so a short or malformed header
+      // is a clean reject instead of a thrown exception.
+      const expectedBuf = Buffer.from(expected, "hex");
+      const providedBuf = Buffer.from(provided, "hex");
+      if (expectedBuf.length !== providedBuf.length) return false;
+
+      return timingSafeEqual(expectedBuf, providedBuf);
+    }
 
 ### Rotating the secret
 
