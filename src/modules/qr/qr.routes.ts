@@ -19,9 +19,11 @@ import { getCreatorBySlug } from "../creator/creator.service.js";
  * rest of the API.
  *
  * This dedicated limiter enforces a tighter 10 req/min per IP, configurable
- * via the QR_RATE_LIMIT env variable (default 10).
+ * via the QR_RATE_LIMIT env variable (default 10) — see config.ts, which
+ * fails fast on a non-numeric value rather than letting a typo quietly fall
+ * back to the default.
  */
-const QR_RATE_LIMIT = Number(process.env.QR_RATE_LIMIT) || 10;
+const QR_RATE_LIMIT = config.rateLimits.qr;
 
 interface SlidingWindow {
   count: number;

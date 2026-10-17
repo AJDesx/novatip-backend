@@ -144,6 +144,24 @@ export const config = {
     from: optional("EMAIL_FROM", "tips@novatip.xyz"),
   },
 
+  rateLimits: {
+    /**
+     * Per-IP cap on POST /auth/challenge. That route is unauthenticated by
+     * nature, so under the shared global budget (100 req/min) a single
+     * caller could exhaust the allowance minting nonces for arbitrary wallet
+     * addresses, filling Redis with short-lived keys and starving legitimate
+     * auth traffic — this is the dedicated, much tighter limit instead.
+     */
+    authChallenge: optionalInt("AUTH_CHALLENGE_RATE_LIMIT", 5),
+
+    /**
+     * Per-IP cap on the QR endpoints. QR generation is CPU-heavy (512px PNG
+     * rasterisation) and public, so the shared global budget is far too
+     * permissive — a single client could exhaust it with QR requests alone.
+     */
+    qr: optionalInt("QR_RATE_LIMIT", 10),
+  },
+
   appBaseUrl,
 
   /**

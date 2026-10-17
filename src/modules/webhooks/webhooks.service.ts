@@ -367,7 +367,17 @@ export async function createWebhook(
   });
 }
 
-export async function listWebhooks(creatorId: string, limit = 50, offset = 0) {
+/** Page size used when the caller does not ask for one. */
+export const DEFAULT_WEBHOOK_PAGE_SIZE = 50;
+
+/** Hard ceiling on a webhook-list page. */
+export const MAX_WEBHOOK_PAGE_SIZE = 100;
+
+export async function listWebhooks(
+  creatorId: string,
+  limit = DEFAULT_WEBHOOK_PAGE_SIZE,
+  offset = 0,
+) {
   return db.webhook.findMany({
     where: { creatorId },
     orderBy: { createdAt: "desc" },

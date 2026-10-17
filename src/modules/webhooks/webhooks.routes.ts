@@ -27,6 +27,8 @@ import {
   MIN_WEBHOOK_SECRET_LENGTH,
   DEFAULT_DELIVERY_PAGE_SIZE,
   MAX_DELIVERY_PAGE_SIZE,
+  DEFAULT_WEBHOOK_PAGE_SIZE,
+  MAX_WEBHOOK_PAGE_SIZE,
 } from "./webhooks.service.js";
 
 /**
@@ -78,32 +80,38 @@ export const DeliveryQuery = z.object({
   offset: z.coerce.number().int().min(0).default(0),
 });
 
+/**
+ * Webhook-list paging. Same shape and the same reasoning as DeliveryQuery:
+ * an out-of-range limit is a 400 naming the ceiling, not a silent clamp — a
+ * caller paging through their webhooks needs to know its page was
+ * shortened, the same as a caller paging through delivery history does.
+ */
+export const WebhookQuery = z.object({
+  limit: z.coerce
+    .number()
+    .int()
+    .min(1)
+    .max(MAX_WEBHOOK_PAGE_SIZE)
+    .default(DEFAULT_WEBHOOK_PAGE_SIZE),
+  offset: z.coerce.number().int().min(0).default(0),
+});
+
 export const webhookRoutes: FastifyPluginAsync = async (app) => {
   app.addHook("onRequest", app.authenticate);
 
   // ── GET / ──────────────────────────────────────────────────────────────────
   app.get("/", async (request, reply) => {
-    const { user } = request;
-    const query = z
-      .object({
-        limit: z
-          .string()
-          .regex(/^[0-9]+$/)
-          .transform(Number)
-          .optional(),
-        offset: z
-          .string()
-          .regex(/^[0-9]+$/)
-          .transform(Number)
-          .optional(),
-      })
-      .safeParse(request.query);
+    const query = WebhookQuery.safeParse(request.query);
     if (!query.success) {
       return reply.status(400).send({ error: query.error.flatten() });
     }
-    const limit = Math.min(query.data.limit ?? 50, 100);
-    const offset = query.data.offset ?? 0;
-    const webhooks = await listWebhooks(user.sub, limit, offset);
+
+    const { user } = request;
+    const webhooks = await listWebhooks(
+      user.sub,
+      query.data.limit,
+      query.data.offset,
+    );
     return reply.send({ webhooks });
   });
 

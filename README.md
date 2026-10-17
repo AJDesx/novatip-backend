@@ -34,6 +34,8 @@ HORIZON_URL - Horizon REST endpoint
 NETWORK_PASSPHRASE - Stellar network passphrase
 USDC_CONTRACT_ID - USDC Stellar Asset Contract ID
 INDEXER_START_LEDGER - Ledger to begin indexing from (default: 0)
+AUTH_CHALLENGE_RATE_LIMIT - Per-IP cap on POST /auth/challenge, req/min (default: 5)
+QR_RATE_LIMIT - Per-IP cap on the QR endpoints, req/min (default: 10)
 RESEND_API_KEY - Resend API key (skip to disable email)
 APP_BASE_URL - Frontend base URL (default: http://localhost:3000)
 CORS_ALLOWED_ORIGINS - Comma-separated origins allowed through CORS in production (default: just APP_BASE_URL; ignored outside production, where any origin is allowed)
@@ -208,6 +210,10 @@ GET    /webhooks             - List webhooks (JWT)
 POST   /webhooks             - Register webhook (JWT)
 PATCH  /webhooks/:id         - Enable or disable a webhook (JWT)
 DELETE /webhooks/:id         - Remove webhook (JWT)
+
+GET /webhooks takes `?limit=` (1–100, default 50) and `?offset=`, the same
+paging shape as GET /webhooks/:id/deliveries below. A limit above the
+ceiling is a 400 naming it, not a silently shortened page.
 
 POST /webhooks takes `{ "url": "...", "secret": "..." }`; `secret` is optional
 and, if omitted, the server mints one with 192 bits of entropy. A

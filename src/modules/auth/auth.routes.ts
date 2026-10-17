@@ -8,6 +8,7 @@
 
 import type { FastifyPluginAsync, FastifyRequest, FastifyReply } from "fastify";
 import { z } from "zod";
+import { config } from "../../config.js";
 import { generateChallenge, verifyChallenge } from "./auth.service.js";
 
 /**
@@ -18,10 +19,11 @@ import { generateChallenge, verifyChallenge } from "./auth.service.js";
  * starving legitimate auth traffic.
  *
  * This dedicated limiter enforces a much tighter per-IP cap. The limit is
- * configurable via AUTH_CHALLENGE_RATE_LIMIT (default 5 req/min per IP).
+ * configurable via AUTH_CHALLENGE_RATE_LIMIT (default 5 req/min per IP) —
+ * see config.ts, which fails fast on a non-numeric value rather than letting
+ * a typo quietly fall back to the default.
  */
-const AUTH_CHALLENGE_RATE_LIMIT =
-  Number(process.env.AUTH_CHALLENGE_RATE_LIMIT) || 5;
+const AUTH_CHALLENGE_RATE_LIMIT = config.rateLimits.authChallenge;
 
 interface SlidingWindow {
   count: number;
