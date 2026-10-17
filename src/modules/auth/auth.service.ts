@@ -60,6 +60,13 @@ export interface VerifyResult {
 /**
  * Verify a signed challenge and return a JWT.
  *
+ * Nonces are single-use: `consumeAuthNonce` burns the stored challenge
+ * immediately upon retrieval before signature verification. Consuming the nonce
+ * on any attempt (success or failure) prevents replay attacks, ensuring an
+ * attacker cannot intercept and reuse a nonce after a failed attempt. Because
+ * any failed verification consumes the challenge, the client must request a new
+ * challenge before attempting verification again.
+ *
  * @param walletAddress - G... Stellar account address
  * @param signatureHex  - Hex-encoded Ed25519 signature over the nonce bytes
  */
@@ -74,7 +81,8 @@ export async function verifyChallenge(
     });
   }
 
-  // Retrieve and consume the nonce (single-use)
+  // Retrieve and consume the nonce (single-use: burns the nonce before
+  // verification to prevent replay attacks on failed attempts).
   const nonce = await consumeAuthNonce(walletAddress);
   if (!nonce) {
     throw Object.assign(
@@ -91,9 +99,10 @@ export async function verifyChallenge(
   // Verify Ed25519 signature
   const valid = verifyEd25519(nonce, signatureHex, publicKey);
   if (!valid) {
-    throw Object.assign(new Error("Signature verification failed."), {
-      statusCode: 401,
-    });
+    throw Object.assign(
+      new Error("Signature verification failed. Request a new challenge."),
+      { statusCode: 401 },
+    );
   }
 
   // Upsert creator record (wallet address is the identity anchor)
