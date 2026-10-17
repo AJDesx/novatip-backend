@@ -27,7 +27,7 @@ Every variable below is read in src/config.ts; `npm run check:env-docs` checks
 this list against that file so the two cannot drift apart again.
 
 DATABASE_URL (required) - PostgreSQL connection string
-JWT_SECRET (required) - Secret for signing JWTs
+JWT_SECRET (required) - Secret for signing JWTs; must be at least 32 characters (a short secret is brute-forceable)
 TIP_SPLITTER_CONTRACT_ID (required) - Deployed contract ID
 PORT - Server port (default: 3001)
 HOST - Server bind address (default: 0.0.0.0)
@@ -37,7 +37,7 @@ STELLAR_NETWORK - testnet | mainnet | local (default: testnet)
 SOROBAN_RPC_URL - Soroban RPC endpoint (default: https://soroban-testnet.stellar.org)
 HORIZON_URL - Horizon REST endpoint (default: https://horizon-testnet.stellar.org)
 NETWORK_PASSPHRASE - Stellar network passphrase (default: "Test SDF Network ; September 2015")
-USDC_CONTRACT_ID - USDC Stellar Asset Contract ID (default: CBIELTK6YBZJU5UP2WWQEUCYKLPU6AUNZ2BQ4WWFEIE3USCIHMXQDAMA, the mainnet one, regardless of STELLAR_NETWORK)
+USDC_CONTRACT_ID (required on mainnet) - USDC Stellar Asset Contract ID (default on testnet/local: CBIELTK6YBZJU5UP2WWQEUCYKLPU6AUNZ2BQ4WWFEIE3USCIHMXQDAMA, the testnet one)
 INDEXER_START_LEDGER - Ledger to begin indexing from (default: 0)
 MAX_WEBHOOKS_PER_CREATOR - Most webhooks one creator may register (default: 5, 0 removes the cap)
 WEBHOOK_DELIVERY_RETENTION_DAYS - Prune successful deliveries older than this (default: 30, 0 disables)
