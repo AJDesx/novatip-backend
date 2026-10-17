@@ -38,7 +38,7 @@ export async function buildServer(): Promise<FastifyInstance> {
   await server.register(helmet, { contentSecurityPolicy: false });
 
   await server.register(cors, {
-    origin: config.nodeEnv === "production" ? config.appBaseUrl : true,
+    origin: isProduction ? config.corsAllowedOrigins : true,
     credentials: true,
   });
 
@@ -62,7 +62,16 @@ export async function buildServer(): Promise<FastifyInstance> {
       try {
         await request.jwtVerify();
       } catch (err) {
-        reply.status(401).send(err);
+        // err.code distinguishes a missing token (FST_JWT_NO_AUTHORIZATION_IN_HEADER)
+        // from an invalid or expired one — kept in the log, not in the response,
+        // since the client gets no more than "unauthorized" either way.
+        server.log.warn({ err, url: request.url }, "authentication failed");
+        reply.status(401).send({
+          error: {
+            code: "UNAUTHORIZED",
+            message: "Authentication required.",
+          },
+        });
       }
     },
   );

@@ -197,7 +197,7 @@ async function deliver(
   return attempt;
 }
 
-function sign(body: string, secret: string): string {
+export function sign(body: string, secret: string): string {
   return createHmac("sha256", secret).update(body).digest("hex");
 }
 
@@ -279,6 +279,34 @@ export function generateWebhookSecret(): string {
 }
 
 /**
+ * error.code on the rejection, so clients can branch on it.
+ */
+export const WEBHOOK_SECRET_TOO_SHORT_CODE = "WEBHOOK_SECRET_TOO_SHORT";
+
+/**
+ * Floor on a caller-supplied signing secret. The signature is the only thing
+ * telling a receiver a delivery really came from Novatip, so a one-character
+ * secret would make that guarantee worthless against even a casual guess.
+ * Below this, the route rejects the request rather than the service writing
+ * a secret too weak to trust — checked here, not only in the route's input
+ * schema, so nothing that calls createWebhook or rotateWebhookSecret directly
+ * can skip it.
+ */
+export const MIN_WEBHOOK_SECRET_LENGTH = 16;
+
+function assertSecretLength(secret: string): void {
+  if (secret.length >= MIN_WEBHOOK_SECRET_LENGTH) return;
+
+  throw Object.assign(
+    new Error(
+      `Webhook secret must be at least ${MIN_WEBHOOK_SECRET_LENGTH} ` +
+        `characters long.`,
+    ),
+    { statusCode: 400, code: WEBHOOK_SECRET_TOO_SHORT_CODE },
+  );
+}
+
+/**
  * Register a webhook, rejecting the request once the creator is at the cap.
  *
  * The count and the insert run in one interactive transaction: two concurrent
@@ -290,6 +318,8 @@ export async function createWebhook(
   url: string,
   secret: string,
 ) {
+  assertSecretLength(secret);
+
   const limit = webhookLimit();
 
   // No cap configured — skip the extra round trip entirely.
@@ -442,6 +472,8 @@ export async function rotateWebhookSecret(
   webhookId: string,
   secret: string = generateWebhookSecret(),
 ) {
+  assertSecretLength(secret);
+
   const { count } = await db.webhook.updateMany({
     where: { id: webhookId, creatorId },
     data: { secret },
