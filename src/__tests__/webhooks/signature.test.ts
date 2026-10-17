@@ -35,6 +35,33 @@ describe("sign", () => {
     );
   });
 
+  it("matches a known HMAC-SHA256 hex digest for a fixed body, secret, and timestamp", () => {
+    // Independently computable: `printf '%s' '1729166400.{"a":1}' | openssl dgst -sha256 -hmac 'shh' -hex`.
+    // Binds the timestamp into signed material as `${timestamp}.${body}` to prevent replay attacks.
+    const body = '{"a":1}';
+    const secret = "shh";
+    const timestamp = "1729166400";
+
+    expect(sign(body, secret, timestamp)).toBe(
+      "aec7c5c6f7bff2c12f120e188b1bec1a7ea217c5ac7c8d39cd54bb8724cd974d",
+    );
+
+    // Numeric timestamp produces identical signature
+    expect(sign(body, secret, 1729166400)).toBe(
+      "aec7c5c6f7bff2c12f120e188b1bec1a7ea217c5ac7c8d39cd54bb8724cd974d",
+    );
+  });
+
+  it("produces a different signature for a different timestamp, same body and secret", () => {
+    const body = '{"a":1}';
+    const secret = "shh";
+
+    const a = sign(body, secret, "1729166400");
+    const b = sign(body, secret, "1729166401");
+
+    expect(a).not.toBe(b);
+  });
+
   it("produces a different signature for a different secret, same body", () => {
     const body = "same body";
 
