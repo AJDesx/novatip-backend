@@ -21,7 +21,7 @@ function optional(key: string, fallback: string): string {
  * otherwise produce an invalid cutoff date and a prune that quietly does
  * nothing (or throws deep inside the scheduler, hours after boot).
  */
-function optionalInt(key: string, fallback: number): number {
+function optionalInt(key: string, fallback: number, min?: number): number {
   const raw = process.env[key];
   if (raw === undefined || raw.trim() === "") return fallback;
 
@@ -29,8 +29,24 @@ function optionalInt(key: string, fallback: number): number {
   if (Number.isNaN(parsed)) {
     throw new Error(`Env var ${key} must be an integer, got "${raw}"`);
   }
+  if (min !== undefined && parsed < min) {
+    throw new Error(`Env var ${key} must be >= ${min}, got ${parsed}`);
+  }
   return parsed;
 }
+
+const STELLAR_NETWORKS = ["testnet", "mainnet", "local"] as const;
+type StellarNetwork = (typeof STELLAR_NETWORKS)[number];
+
+function isStellarNetwork(value: string): value is StellarNetwork {
+  return (STELLAR_NETWORKS as readonly string[]).includes(value);
+}
+
+// Minimum JWT secret length: short enough to type by hand, long enough that
+// brute-forcing it is infeasible. A 256-bit (32-byte) secret is the usual
+// floor for HMAC signing keys; anything shorter signs real sessions with a
+// guessable key.
+const MIN_JWT_SECRET_LENGTH = 32;
 
 /**
  * Read a comma-separated list setting, trimming each entry and dropping
@@ -49,6 +65,21 @@ function optionalList(key: string, fallback: string[]): string[] {
 
 const appBaseUrl = optional("APP_BASE_URL", "http://localhost:3000");
 
+const jwtSecretValue = require("JWT_SECRET");
+if (jwtSecretValue.length < MIN_JWT_SECRET_LENGTH) {
+  throw new Error(
+    `Env var JWT_SECRET must be at least ${MIN_JWT_SECRET_LENGTH} characters ` +
+      `(a short secret is brute-forceable), got ${jwtSecretValue.length}`,
+  );
+}
+
+const stellarNetwork = optional("STELLAR_NETWORK", "testnet");
+if (!isStellarNetwork(stellarNetwork)) {
+  throw new Error(
+    `Env var STELLAR_NETWORK must be one of ${STELLAR_NETWORKS.join(", ")}, got "${stellarNetwork}"`,
+  );
+}
+
 export const config = {
   port: parseInt(optional("PORT", "3001"), 10),
   host: optional("HOST", "0.0.0.0"),
@@ -57,11 +88,10 @@ export const config = {
   databaseUrl: require("DATABASE_URL"),
   redisUrl: optional("REDIS_URL", "redis://localhost:6379"),
 
-  jwtSecret: require("JWT_SECRET"),
+  jwtSecret: jwtSecretValue,
 
   stellar: {
-    network: optional("STELLAR_NETWORK", "testnet") as
-      "testnet" | "mainnet" | "local",
+    network: stellarNetwork,
     rpcUrl: optional("SOROBAN_RPC_URL", "https://soroban-testnet.stellar.org"),
     horizonUrl: optional("HORIZON_URL", "https://horizon-testnet.stellar.org"),
     passphrase: optional(
@@ -69,11 +99,18 @@ export const config = {
       "Test SDF Network ; September 2015",
     ),
     tipSplitterContractId: require("TIP_SPLITTER_CONTRACT_ID"),
-    usdcContractId: optional(
-      "USDC_CONTRACT_ID",
-      "CBIELTK6YBZJU5UP2WWQEUCYKLPU6AUNZ2BQ4WWFEIE3USCIHMXQDAMA",
-    ),
-    indexerStartLedger: parseInt(optional("INDEXER_START_LEDGER", "0"), 10),
+    // Defaulting this on mainnet would silently point at an asset that
+    // doesn't exist there (the fallback below is the *testnet* USDC SAC), so
+    // mainnet must set it explicitly; testnet/local keep the convenience
+    // default (issue #71).
+    usdcContractId:
+      stellarNetwork === "mainnet"
+        ? require("USDC_CONTRACT_ID")
+        : optional(
+            "USDC_CONTRACT_ID",
+            "CBIELTK6YBZJU5UP2WWQEUCYKLPU6AUNZ2BQ4WWFEIE3USCIHMXQDAMA",
+          ),
+    indexerStartLedger: optionalInt("INDEXER_START_LEDGER", 0, 0),
   },
 
   webhooks: {
