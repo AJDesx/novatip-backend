@@ -113,6 +113,19 @@ export const config = {
 
   rateLimits: {
     /**
+     * The server-wide budget every route not covered by a dedicated limiter
+     * shares, enforced in server.ts. 100 req/min is a reasonable guess and
+     * the wrong number for both a load test and a busy creator page polling
+     * for new tips — RATE_LIMIT_MAX and RATE_LIMIT_WINDOW let an operator
+     * tune it per deployment instead of editing the code.
+     */
+    global: {
+      max: optionalInt("RATE_LIMIT_MAX", 100),
+      /** @fastify/rate-limit's own format, e.g. "1 minute" or a ms count. */
+      window: optional("RATE_LIMIT_WINDOW", "1 minute"),
+    },
+
+    /**
      * Per-IP cap on POST /auth/challenge. That route is unauthenticated by
      * nature, so under the shared global budget (100 req/min) a single
      * caller could exhaust the allowance minting nonces for arbitrary wallet
