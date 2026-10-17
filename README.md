@@ -417,8 +417,32 @@ provider refused.
 
 ## Webhook Signatures
 
-Header: X-Novatip-Signature: sha256=<hex>
-Verify: createHmac("sha256", secret).update(body).digest("hex")
+Each webhook delivery carries two headers to authenticate origin and prevent replay attacks:
+- `X-Novatip-Signature`: `sha256=<hex>`
+- `X-Novatip-Timestamp`: `<unix-timestamp-in-seconds>`
+
+### Signed Material & Verification
+
+The signature is computed as an HMAC-SHA256 hex digest over the timestamp and raw request body, separated by a period:
+
+```javascript
+const signatureHeader = req.headers["x-novatip-signature"]; // sha256=<hex>
+const timestamp = req.headers["x-novatip-timestamp"]; // e.g. "1729166400"
+const expectedSignature = "sha256=" + createHmac("sha256", webhookSecret)
+  .update(`${timestamp}.${rawBody}`)
+  .digest("hex");
+
+// 1. Verify signatures match in constant time
+const valid = crypto.timingSafeEqual(
+  Buffer.from(signatureHeader),
+  Buffer.from(expectedSignature),
+);
+
+// 2. Reject replays older than tolerance (e.g. 5 minutes)
+const now = Math.floor(Date.now() / 1000);
+const tolerance = 300;
+const fresh = Math.abs(now - parseInt(timestamp, 10)) <= tolerance;
+```
 
 The secret is returned exactly twice in its life: in the POST /webhooks response
 that created the webhook, and in a POST /webhooks/:id/secret response that

@@ -14,6 +14,7 @@ import { formatUsdc } from "@novatip/sdk";
 import { db } from "../../db.js";
 import { config } from "../../config.js";
 import { logger } from "../../utils/logger.js";
+import { escapeHtml } from "../../utils/html.js";
 
 const emailLogger = logger.child({ component: "notifications" });
 
@@ -48,10 +49,26 @@ export async function sendTipNotification(event: TipEvent): Promise<void> {
   const displayName = creator.displayName ?? creator.slug;
   const message = event.message ? `"${event.message}"` : "No message left.";
 
+  const safeDisplayName = escapeHtml(displayName);
+  const safeAmount = escapeHtml(amount);
+  const safeMessage = event.message
+    ? `"${escapeHtml(event.message)}"`
+    : "No message left.";
+
   try {
     // Dynamic import so Resend is only loaded when the API key is set
     const { Resend } = await import("resend");
     const resend = new Resend(config.resend.apiKey);
+
+    const text = [
+      `Hey ${displayName}!`,
+      "",
+      `Someone just tipped you $${amount} USDC on Novatip.`,
+      "",
+      message,
+      "",
+      `View your dashboard: ${config.appBaseUrl}/dashboard`,
+    ].join("\n");
 
     // Resend reports API failures via the returned `error` rather than by
     // throwing, so the catch below never sees them — check it explicitly.
@@ -59,12 +76,13 @@ export async function sendTipNotification(event: TipEvent): Promise<void> {
       from: config.resend.from,
       to: [creator.email],
       subject: `💸 You received $${amount} USDC on Novatip!`,
+      text,
       html: `
-        <h2>Hey ${displayName}!</h2>
+        <h2>Hey ${safeDisplayName}!</h2>
         <p>
-          Someone just tipped you <strong>$${amount} USDC</strong> on Novatip.
+          Someone just tipped you <strong>$${safeAmount} USDC</strong> on Novatip.
         </p>
-        <p><em>${message}</em></p>
+        <p><em>${safeMessage}</em></p>
         <p>
           <a href="${config.appBaseUrl}/dashboard">View your dashboard →</a>
         </p>

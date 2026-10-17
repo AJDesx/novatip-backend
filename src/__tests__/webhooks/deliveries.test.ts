@@ -254,6 +254,47 @@ describe("history of a dispatch that failed", () => {
     expect(rows?.[0]).toMatchObject({ statusCode: null, success: false });
     expect(rows?.[0]?.response).toContain("ECONNREFUSED");
   });
+
+  it("truncates an oversized payload before storing the delivery row", async () => {
+    fake.seedCreator({ id: CREATOR, jarId: "@alice" });
+    fake.seedWebhook({ creatorId: CREATOR });
+    mockFetch.mockResolvedValue({
+      ok: true,
+      status: 200,
+      text: async () => "ok",
+    } as unknown as Response);
+
+    const oversizedTip = {
+      ...tip,
+      message: "x".repeat(500),
+    };
+
+    const { config } = await import("../../config.js");
+    const originalMax = config.webhooks.maxPayloadSize;
+    try {
+      (
+        config.webhooks as { maxPayloadSize?: number | undefined }
+      ).maxPayloadSize = 350;
+
+      await dispatchWebhooks(oversizedTip);
+
+      const stored = fake.deliveries[0];
+      expect(stored).toBeDefined();
+      const payload = stored?.payload as { message: string };
+      expect(payload.message).toHaveLength(201); // 200 chars + "…"
+      expect(payload.message.endsWith("…")).toBe(true);
+
+      // Verify fetch received the full un-truncated payload
+      expect(mockFetch).toHaveBeenCalledTimes(1);
+      const dispatchedJson = mockFetch.mock.calls[0]?.[1]?.body as string;
+      const dispatched = JSON.parse(dispatchedJson);
+      expect(dispatched.message).toHaveLength(500);
+    } finally {
+      (
+        config.webhooks as { maxPayloadSize?: number | undefined }
+      ).maxPayloadSize = originalMax;
+    }
+  });
 });
 
 // ── Route-level bounds ────────────────────────────────────────────────────────

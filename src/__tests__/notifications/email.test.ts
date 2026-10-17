@@ -1,0 +1,237 @@
+/**
+ * __tests__/notifications/email.test.ts
+ *
+ * Verifies tip notification emails dispatched via Resend:
+ * - Includes both HTML and plain-text alternatives in the send payload.
+ * - Confirms both parts carry the same amount, message, and dashboard link.
+ * - Confirms the text part is not HTML-escaped.
+ */
+
+import { jest } from "@jest/globals";
+import type { TipEvent } from "@novatip/sdk";
+
+process.env["DATABASE_URL"] ??= "postgresql://user:pass@localhost:5432/test";
+process.env["JWT_SECRET"] ??= "test-secret-not-used-for-signing";
+process.env["TIP_SPLITTER_CONTRACT_ID"] ??= `C${"A".repeat(55)}`;
+process.env["RESEND_API_KEY"] = "re_test_key";
+process.env["APP_BASE_URL"] = "https://app.novatip.xyz";
+
+type SendPayload = {
+  from: string;
+  to: string[];
+  subject: string;
+  text?: string;
+  html?: string;
+};
+
+type CreatorRecord = {
+  id: string;
+  slug: string;
+  displayName?: string | null;
+  email?: string | null;
+};
+
+const mockSend =
+  jest.fn<(payload: SendPayload) => Promise<{ error: null | Error }>>();
+
+jest.unstable_mockModule("resend", () => ({
+  Resend: jest.fn().mockImplementation(() => ({
+    emails: {
+      send: mockSend,
+    },
+  })),
+}));
+
+const mockDb = {
+  creator: {
+    findUnique: jest.fn<() => Promise<CreatorRecord | null>>(),
+  },
+  notification: {
+    create: jest.fn<() => Promise<unknown>>(),
+  },
+};
+
+jest.unstable_mockModule("../../db.js", () => ({
+  db: mockDb,
+  disconnectDb: async (): Promise<void> => undefined,
+}));
+
+const { config } = await import("../../config.js");
+const { sendTipNotification } =
+  await import("../../modules/notifications/email.service.js");
+
+describe("sendTipNotification", () => {
+  beforeEach(() => {
+    jest.clearAllMocks();
+    mockSend.mockResolvedValue({ error: null });
+  });
+
+  const tipEvent: TipEvent = {
+    jarId: "@alice",
+    from: "GUSER123",
+    amount: 50000000n, // 5.00 USDC (7 decimals)
+    message: "Thanks for the great work & tips <3!",
+    ledger: 12345,
+    timestamp: "2026-10-17T12:00:00Z",
+    txHash: "0x1234567890abcdef",
+  };
+
+  it("sends both text and html parts carrying the same amount, message, and dashboard link", async () => {
+    mockDb.creator.findUnique.mockResolvedValue({
+      id: "creator_1",
+      slug: "alice",
+      displayName: "Alice",
+      email: "alice@example.com",
+    });
+
+    await sendTipNotification(tipEvent);
+
+    expect(mockSend).toHaveBeenCalledTimes(1);
+    const payload = mockSend.mock.calls[0]?.[0];
+    if (!payload) throw new Error("mockSend payload is undefined");
+
+    expect(payload.to).toEqual(["alice@example.com"]);
+    expect(payload.subject).toContain("5.00 USDC");
+
+    // Both text and html must be present
+    expect(typeof payload.text).toBe("string");
+    expect(typeof payload.html).toBe("string");
+
+    // Both carry the same amount
+    expect(payload.text).toContain("5.00 USDC");
+    expect(payload.html).toContain("5.00 USDC");
+
+    // Both carry the message
+    expect(payload.text).toContain('"Thanks for the great work & tips <3!"');
+    expect(payload.html).toContain(
+      '"Thanks for the great work &amp; tips &lt;3!"',
+    );
+
+    // Both carry the dashboard link
+    expect(payload.text).toContain("https://app.novatip.xyz/dashboard");
+    expect(payload.html).toContain("https://app.novatip.xyz/dashboard");
+
+    // Text part is plain text, not HTML formatted or escaped
+    expect(payload.text).not.toContain("<strong>");
+    expect(payload.text).not.toContain("<h2>");
+    expect(payload.text).toContain("&");
+    expect(payload.text).toContain("<3");
+  });
+
+  it("escapes tip messages and display names containing angle brackets and quotes in HTML", async () => {
+    mockDb.creator.findUnique.mockResolvedValue({
+      id: "creator_1",
+      slug: "bob",
+      displayName: 'Bob <Admin> "The Great"',
+      email: "bob@example.com",
+    });
+
+    const xssTip: TipEvent = {
+      ...tipEvent,
+      message: `<script>alert("xss & 'pwned'")</script>`,
+    };
+
+    await sendTipNotification(xssTip);
+
+    expect(mockSend).toHaveBeenCalledTimes(1);
+    const payload = mockSend.mock.calls[0]?.[0];
+    if (!payload) throw new Error("mockSend payload is undefined");
+
+    // HTML part must be safely escaped
+    expect(payload.html).toContain("Bob &lt;Admin&gt; &quot;The Great&quot;");
+    expect(payload.html).toContain(
+      "&lt;script&gt;alert(&quot;xss &amp; &#39;pwned&#39;&quot;)&lt;/script&gt;",
+    );
+    expect(payload.html).not.toContain('<script>alert("xss');
+
+    // Text part remains raw unescaped text
+    expect(payload.text).toContain('Bob <Admin> "The Great"');
+    expect(payload.text).toContain("<script>alert(\"xss & 'pwned'\")</script>");
+  });
+
+  it("handles empty message gracefully in both text and html parts", async () => {
+    mockDb.creator.findUnique.mockResolvedValue({
+      id: "creator_1",
+      slug: "alice",
+      displayName: "Alice",
+      email: "alice@example.com",
+    });
+
+    const tipWithoutMessage: TipEvent = {
+      ...tipEvent,
+      message: "",
+    };
+
+    await sendTipNotification(tipWithoutMessage);
+
+    expect(mockSend).toHaveBeenCalledTimes(1);
+    const payload = mockSend.mock.calls[0]?.[0];
+    if (!payload) throw new Error("mockSend payload is undefined");
+
+    expect(payload.text).toContain("No message left.");
+    expect(payload.html).toContain("No message left.");
+  });
+
+  it("skips notification when RESEND_API_KEY is not configured", async () => {
+    const originalKey = config.resend.apiKey;
+    try {
+      (config.resend as { apiKey?: string | undefined }).apiKey = undefined;
+
+      await sendTipNotification(tipEvent);
+
+      expect(mockSend).not.toHaveBeenCalled();
+      expect(mockDb.creator.findUnique).not.toHaveBeenCalled();
+    } finally {
+      (config.resend as { apiKey?: string | undefined }).apiKey = originalKey;
+    }
+  });
+
+  it("skips notification when no creator exists for the jar", async () => {
+    mockDb.creator.findUnique.mockResolvedValue(null);
+
+    await sendTipNotification(tipEvent);
+
+    expect(mockSend).not.toHaveBeenCalled();
+    expect(mockDb.notification.create).not.toHaveBeenCalled();
+  });
+
+  it("skips notification when creator has no email on record", async () => {
+    mockDb.creator.findUnique.mockResolvedValue({
+      id: "creator_1",
+      slug: "alice",
+      displayName: "Alice",
+      email: null,
+    });
+
+    await sendTipNotification(tipEvent);
+
+    expect(mockSend).not.toHaveBeenCalled();
+    expect(mockDb.notification.create).not.toHaveBeenCalled();
+  });
+
+  it("writes notification row only after a successful send", async () => {
+    mockDb.creator.findUnique.mockResolvedValue({
+      id: "creator_1",
+      slug: "alice",
+      displayName: "Alice",
+      email: "alice@example.com",
+    });
+
+    // Successful send writes DB notification row
+    mockSend.mockResolvedValueOnce({ error: null });
+    await sendTipNotification(tipEvent);
+    expect(mockDb.notification.create).toHaveBeenCalledTimes(1);
+    expect(mockDb.notification.create).toHaveBeenCalledWith({
+      data: expect.objectContaining({
+        creatorId: "creator_1",
+        type: "TIP_RECEIVED",
+      }),
+    });
+
+    // Failed send does NOT write DB notification row
+    mockDb.notification.create.mockClear();
+    mockSend.mockResolvedValueOnce({ error: new Error("Resend rate limit") });
+    await sendTipNotification(tipEvent);
+    expect(mockDb.notification.create).not.toHaveBeenCalled();
+  });
+});

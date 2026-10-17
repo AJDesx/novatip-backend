@@ -84,7 +84,11 @@ const tip = {
 };
 
 /** The body and signature header of the nth request made. */
-function requestAt(index: number): { body: string; signature: string } {
+function requestAt(index: number): {
+  body: string;
+  signature: string;
+  timestamp: string;
+} {
   const call = mockFetch.mock.calls[index];
   if (call === undefined) throw new Error(`no request at index ${index}`);
   const init = call[1] ?? {};
@@ -92,11 +96,17 @@ function requestAt(index: number): { body: string; signature: string } {
   return {
     body: String(init.body),
     signature: headers?.["X-Novatip-Signature"] ?? "",
+    timestamp: headers?.["X-Novatip-Timestamp"] ?? "",
   };
 }
 
-function signatureFor(body: string, secret: string): string {
-  return `sha256=${createHmac("sha256", secret).update(body).digest("hex")}`;
+function signatureFor(
+  body: string,
+  secret: string,
+  timestamp?: string,
+): string {
+  const material = timestamp !== undefined ? `${timestamp}.${body}` : body;
+  return `sha256=${createHmac("sha256", secret).update(material).digest("hex")}`;
 }
 
 // ── Generation ────────────────────────────────────────────────────────────────
@@ -267,7 +277,9 @@ describe("deliveries after rotation", () => {
 
     await dispatchWebhooks(tip);
     const before = requestAt(0);
-    expect(before.signature).toBe(signatureFor(before.body, OLD_SECRET));
+    expect(before.signature).toBe(
+      signatureFor(before.body, OLD_SECRET, before.timestamp),
+    );
 
     const rotated = await rotateWebhookSecret(CREATOR, webhook.id);
     await dispatchWebhooks(tip);
@@ -276,7 +288,9 @@ describe("deliveries after rotation", () => {
     // Same body, different key — so the signature is the only thing that
     // moved, and it moved to the secret the creator was just handed.
     expect(after.body).toBe(before.body);
-    expect(after.signature).toBe(signatureFor(after.body, rotated!.secret));
+    expect(after.signature).toBe(
+      signatureFor(after.body, rotated!.secret, after.timestamp),
+    );
     expect(after.signature).not.toBe(before.signature);
   });
 
@@ -294,7 +308,9 @@ describe("deliveries after rotation", () => {
 
     // No overlap window is deliberate: a secret rotated because it leaked
     // needs the old one dead immediately, not accepted alongside the new.
-    expect(sent.signature).not.toBe(signatureFor(sent.body, OLD_SECRET));
+    expect(sent.signature).not.toBe(
+      signatureFor(sent.body, OLD_SECRET, sent.timestamp),
+    );
   });
 
   it("include a test ping, so the new secret can be verified before a real tip", async () => {
@@ -308,7 +324,9 @@ describe("deliveries after rotation", () => {
     await sendTestPing(CREATOR, webhook.id);
     const sent = requestAt(0);
 
-    expect(sent.signature).toBe(signatureFor(sent.body, rotated!.secret));
+    expect(sent.signature).toBe(
+      signatureFor(sent.body, rotated!.secret, sent.timestamp),
+    );
   });
 
   it("resume under the new secret after the disable/rotate/re-enable recipe", async () => {
@@ -331,6 +349,8 @@ describe("deliveries after rotation", () => {
 
     expect(mockFetch).toHaveBeenCalledTimes(1);
     const sent = requestAt(0);
-    expect(sent.signature).toBe(signatureFor(sent.body, rotated!.secret));
+    expect(sent.signature).toBe(
+      signatureFor(sent.body, rotated!.secret, sent.timestamp),
+    );
   });
 });
