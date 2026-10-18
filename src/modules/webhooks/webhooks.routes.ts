@@ -15,6 +15,7 @@
 
 import type { FastifyPluginAsync } from "fastify";
 import { z } from "zod";
+import { httpsUrl } from "../../utils/validation.js";
 import {
   createWebhook,
   listWebhooks,
@@ -42,7 +43,7 @@ import {
 const webhookSecret = z.string().min(MIN_WEBHOOK_SECRET_LENGTH);
 
 const CreateBody = z.object({
-  url: z.string().url(),
+  url: httpsUrl("Webhook URL"),
   /** Optional custom secret; auto-generated if omitted */
   secret: webhookSecret.optional(),
 });

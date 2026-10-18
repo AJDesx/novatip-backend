@@ -42,7 +42,7 @@ const ClaimBody = z.object({
 const UpdateProfileBody = z.object({
   displayName: z.string().max(80).optional(),
   bio: z.string().max(300).optional(),
-  avatarUrl: httpsUrl.optional(),
+  avatarUrl: httpsUrl("Avatar URL").optional(),
   // Nullable so the field can be cleared; omitting it leaves it unchanged.
   email: creatorEmail.nullable().optional(),
 });
