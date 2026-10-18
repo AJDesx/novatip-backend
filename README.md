@@ -21,6 +21,41 @@ Prerequisites: Node.js >= 20, Docker + Docker Compose
 5. Dev server: npm run dev (http://localhost:3001)
 6. Full stack: docker compose up -d
 
+## Data Model
+
+The PostgreSQL schema is defined in `prisma/schema.prisma`. Its six models
+connect creator accounts to indexed tips and their notification and webhook
+delivery paths:
+
+- **Creator** represents a tip recipient. Its wallet address, public slug, and
+  on-chain `jarId` are unique. A creator has many tips, webhooks, and
+  notifications. `jarId` is unique because each on-chain jar must resolve to
+  exactly one creator; the slug and wallet address likewise identify a single
+  public profile and account.
+- **Tip** stores an indexed on-chain tip, including its transaction hash,
+  ledger, sender, amount, and optional message. Each tip belongs to one creator.
+  `txHash` is unique so the indexer can deduplicate events and avoid recording
+  the same transaction more than once. `amount` is stored as a string in USDC
+  stroops rather than a numeric type because the contract uses 128-bit integer
+  amounts, which can exceed the exact precision of JavaScript numbers. Keeping
+  it as a string preserves the full amount without a lossy numeric conversion.
+- **Webhook** stores a creator's target URL, HMAC signing secret, and enabled
+  state. It belongs to one creator and has many delivery-attempt records.
+- **WebhookDelivery** records an individual attempt to send a webhook,
+  including its payload, response status, success state, and attempt time. Each
+  delivery belongs to one webhook.
+- **Notification** stores a creator-facing event and its JSON payload, such as
+  a received tip or failed webhook. It belongs to one creator and may have a
+  `sentAt` timestamp when sent.
+- **IndexerCursor** stores the last processed ledger. The indexer uses it to
+  resume from the correct point after a restart; its default ID of `1` makes
+  this a single shared cursor rather than one cursor per creator.
+
+Each model's `id` is a primary key. In addition, `Creator.walletAddress`,
+`Creator.slug`, `Creator.jarId`, and `Tip.txHash` have unique constraints.
+These are enforced by the database, so they also protect against concurrent
+requests or indexer runs that race past an application-level pre-check.
+
 ## Environment Variables
 
 Every variable below is read in src/config.ts; `npm run check:env-docs` checks
