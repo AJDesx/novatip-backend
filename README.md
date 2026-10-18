@@ -21,6 +21,44 @@ Prerequisites: Node.js >= 20, Docker + Docker Compose
 5. Dev server: npm run dev (http://localhost:3001)
 6. Full stack: docker compose up -d
 
+### Run against a freshly deployed testnet contract
+
+The contract repository's published testnet deployment may not match the
+current contract interface. To exercise indexing against the current code,
+deploy a fresh testnet contract from
+[Novatip/novatip-contracts](https://github.com/Novatip/novatip-contracts):
+
+1. Install Stellar CLI 27.1.0 or newer and Rust, then clone the contracts
+   repository. From its root, install the Wasm target with
+   `rustup target add wasm32v1-none`.
+2. Generate and fund a testnet Stellar identity, then copy `.env.example` to
+   `.env` in the contracts repository. Set `NETWORK=testnet`, `SOURCE` to the
+   identity name, `ADMIN` to the admin address, and `USDC_TOKEN` to the testnet
+   USDC contract listed in that repository's README.
+3. Run `make deploy`. This builds and deploys the contract and writes its ID
+   to `.contract-id.testnet`. If the deploy script rejects the documented
+   testnet USDC ID, verify the ID against the contracts README and rerun with
+   `ALLOW_CUSTOM_TOKEN=1 make deploy`; this bypasses the script's token-ID
+   guard but still deploys with the `USDC_TOKEN` value you set.
+4. In this repository's `.env`, set `STELLAR_NETWORK=testnet`,
+   `SOROBAN_RPC_URL=https://soroban-testnet.stellar.org`,
+   `NETWORK_PASSPHRASE="Test SDF Network ; September 2015"`,
+   `USDC_CONTRACT_ID` to the same testnet USDC contract, and
+   `TIP_SPLITTER_CONTRACT_ID` to the ID printed by `make deploy`. Set
+   `INDEXER_START_LEDGER` to the deployment ledger if known. Otherwise, use a
+   recent ledger shortly before starting the backend (for example, the
+   current testnet ledger minus 1,000), not `0`; a fresh deployment has no
+   useful history to scan from genesis.
+5. Use the contracts repository's `scripts/create-jar.sh` to create a jar
+   whose `SLUG` matches the backend's on-chain `jarId` (claiming `alice` in the
+   backend derives `@alice`). Register/claim that creator in the backend for
+   the same wallet, then use `scripts/tip.sh` in the contracts repository to
+   send a test tip to that jar. Ensure the sender and jar recipients have the
+   required testnet USDC trustlines.
+6. Start this backend with `npm run dev`. Confirm its indexer logs the event
+   and that the tip appears in the database or analytics for the registered
+   creator.
+
 ## Data Model
 
 The PostgreSQL schema is defined in `prisma/schema.prisma`. Its six models
@@ -55,6 +93,30 @@ Each model's `id` is a primary key. In addition, `Creator.walletAddress`,
 `Creator.slug`, `Creator.jarId`, and `Tip.txHash` have unique constraints.
 These are enforced by the database, so they also protect against concurrent
 requests or indexer runs that race past an application-level pre-check.
+
+## Cache Behaviour
+
+Redis keys below are prefixed with `cache:` by the cache helper. Analytics
+entries are keyed by creator ID and query parameters; creator profiles use the
+public slug:
+
+| Read | Key (after `cache:` prefix) | TTL |
+|------|-----------------------------|-----|
+| Tip totals | `analytics:totals:<creatorId>` | 30 seconds |
+| Time series | `analytics:timeseries:<creatorId>:<days>` | 30 seconds |
+| Top supporters | `analytics:top:<creatorId>:<limit>` | 30 seconds |
+| Authenticated recent tips | `analytics:recent:<creatorId>:<limit>:<cursor-or-head>` | 30 seconds |
+| Collaborator earnings | `analytics:collaborators:<creatorId>` | 30 seconds |
+| Public recent tips | `analytics:public-recent:<slug>:<limit>:<cursor-or-head>` | 15 seconds |
+| Public creator profile | `creator:<slug>` | 60 seconds |
+
+Profile claim, rename, profile update, and split update invalidate the affected
+`creator:<slug>` entry (rename invalidates both old and new slugs). Analytics
+entries are not explicitly invalidated when tips are indexed or creator splits
+change; they expire naturally. A creator's dashboard aggregates can therefore
+be up to 30 seconds stale, public tip feeds up to 15 seconds stale, and a
+cached public profile up to 60 seconds stale. Updating a profile invalidates
+its profile key immediately, but does not invalidate cached analytics.
 
 ## Environment Variables
 
@@ -423,6 +485,39 @@ through its highest ledger. That ledger is held back and re-fetched on the next
 poll rather than skipped — so only ledgers known to be complete are marked done.
 Persisting a tip is idempotent (upsert on txHash), but webhook and email
 dispatch are not, which is why the cursor must not linger on a handled ledger.
+
+### Reindexing from a chosen ledger
+
+The saved `IndexerCursor` takes precedence over `INDEXER_START_LEDGER` after
+the indexer has processed any ledger. To rescan from ledger `N`:
+
+1. Stop the backend and back up the database.
+2. Set `INDEXER_START_LEDGER=N` in `.env`, where `N` is the first ledger to
+   fetch. Choose a recent ledger that covers the events you need; old Soroban
+   events may no longer be available from the RPC provider.
+3. Reset the saved cursor so startup uses the configured start ledger:
+   `DELETE FROM "IndexerCursor" WHERE id = 1;`
+4. Restart the backend. It begins fetching from `N` and persists a new cursor
+   as it progresses.
+
+An already-indexed transaction is not inserted a second time: `Tip.txHash` is
+the unique key for an upsert, and an existing row is left unchanged. Replaying
+its event does still run webhook and email dispatch again; those side effects
+are not deduplicated. Consider disabling webhooks and email before a replay if
+duplicate notifications would be a problem.
+
+### Switching to a newly deployed contract
+
+Set `TIP_SPLITTER_CONTRACT_ID` to the new contract and choose a start ledger
+near its deployment as described in
+[Run against a freshly deployed testnet contract](#run-against-a-freshly-deployed-testnet-contract).
+Stop the backend and delete the cursor row before restarting, or the saved
+cursor will resume indexing at the old position. The `Tip` rows do not record
+their source contract or network, so pointing an existing database at another
+contract can mix old and new tips in the same creator's analytics. Prefer a
+separate database for the new deployment. If reusing a database, back it up
+and deliberately remove or archive the old deployment's tip rows before
+restarting; resetting the cursor alone does not remove them.
 
 ### Manual verification against testnet
 
