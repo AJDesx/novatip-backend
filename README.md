@@ -18,8 +18,105 @@ Prerequisites: Node.js >= 20, Docker + Docker Compose
 2. Copy env: cp .env.example .env
 3. Start infra: docker compose up -d postgres redis
 4. Migrate: npm run db:generate && npm run db:migrate
-5. Dev server: npm run dev  (http://localhost:3001)
+5. Dev server: npm run dev (http://localhost:3001)
 6. Full stack: docker compose up -d
+
+### Run against a freshly deployed testnet contract
+
+The contract repository's published testnet deployment may not match the
+current contract interface. To exercise indexing against the current code,
+deploy a fresh testnet contract from
+[Novatip/novatip-contracts](https://github.com/Novatip/novatip-contracts):
+
+1. Install Stellar CLI 27.1.0 or newer and Rust, then clone the contracts
+   repository. From its root, install the Wasm target with
+   `rustup target add wasm32v1-none`.
+2. Generate and fund a testnet Stellar identity, then copy `.env.example` to
+   `.env` in the contracts repository. Set `NETWORK=testnet`, `SOURCE` to the
+   identity name, `ADMIN` to the admin address, and `USDC_TOKEN` to the testnet
+   USDC contract listed in that repository's README.
+3. Run `make deploy`. This builds and deploys the contract and writes its ID
+   to `.contract-id.testnet`. If the deploy script rejects the documented
+   testnet USDC ID, verify the ID against the contracts README and rerun with
+   `ALLOW_CUSTOM_TOKEN=1 make deploy`; this bypasses the script's token-ID
+   guard but still deploys with the `USDC_TOKEN` value you set.
+4. In this repository's `.env`, set `STELLAR_NETWORK=testnet`,
+   `SOROBAN_RPC_URL=https://soroban-testnet.stellar.org`,
+   `NETWORK_PASSPHRASE="Test SDF Network ; September 2015"`,
+   `USDC_CONTRACT_ID` to the same testnet USDC contract, and
+   `TIP_SPLITTER_CONTRACT_ID` to the ID printed by `make deploy`. Set
+   `INDEXER_START_LEDGER` to the deployment ledger if known. Otherwise, use a
+   recent ledger shortly before starting the backend (for example, the
+   current testnet ledger minus 1,000), not `0`; a fresh deployment has no
+   useful history to scan from genesis.
+5. Use the contracts repository's `scripts/create-jar.sh` to create a jar
+   whose `SLUG` matches the backend's on-chain `jarId` (claiming `alice` in the
+   backend derives `@alice`). Register/claim that creator in the backend for
+   the same wallet, then use `scripts/tip.sh` in the contracts repository to
+   send a test tip to that jar. Ensure the sender and jar recipients have the
+   required testnet USDC trustlines.
+6. Start this backend with `npm run dev`. Confirm its indexer logs the event
+   and that the tip appears in the database or analytics for the registered
+   creator.
+
+## Data Model
+
+The PostgreSQL schema is defined in `prisma/schema.prisma`. Its six models
+connect creator accounts to indexed tips and their notification and webhook
+delivery paths:
+
+- **Creator** represents a tip recipient. Its wallet address, public slug, and
+  on-chain `jarId` are unique. A creator has many tips, webhooks, and
+  notifications. `jarId` is unique because each on-chain jar must resolve to
+  exactly one creator; the slug and wallet address likewise identify a single
+  public profile and account.
+- **Tip** stores an indexed on-chain tip, including its transaction hash,
+  ledger, sender, amount, and optional message. Each tip belongs to one creator.
+  `txHash` is unique so the indexer can deduplicate events and avoid recording
+  the same transaction more than once. `amount` is stored as a string in USDC
+  stroops rather than a numeric type because the contract uses 128-bit integer
+  amounts, which can exceed the exact precision of JavaScript numbers. Keeping
+  it as a string preserves the full amount without a lossy numeric conversion.
+- **Webhook** stores a creator's target URL, HMAC signing secret, and enabled
+  state. It belongs to one creator and has many delivery-attempt records.
+- **WebhookDelivery** records an individual attempt to send a webhook,
+  including its payload, response status, success state, and attempt time. Each
+  delivery belongs to one webhook.
+- **Notification** stores a creator-facing event and its JSON payload, such as
+  a received tip or failed webhook. It belongs to one creator and may have a
+  `sentAt` timestamp when sent.
+- **IndexerCursor** stores the last processed ledger. The indexer uses it to
+  resume from the correct point after a restart; its default ID of `1` makes
+  this a single shared cursor rather than one cursor per creator.
+
+Each model's `id` is a primary key. In addition, `Creator.walletAddress`,
+`Creator.slug`, `Creator.jarId`, and `Tip.txHash` have unique constraints.
+These are enforced by the database, so they also protect against concurrent
+requests or indexer runs that race past an application-level pre-check.
+
+## Cache Behaviour
+
+Redis keys below are prefixed with `cache:` by the cache helper. Analytics
+entries are keyed by creator ID and query parameters; creator profiles use the
+public slug:
+
+| Read | Key (after `cache:` prefix) | TTL |
+|------|-----------------------------|-----|
+| Tip totals | `analytics:totals:<creatorId>` | 30 seconds |
+| Time series | `analytics:timeseries:<creatorId>:<days>` | 30 seconds |
+| Top supporters | `analytics:top:<creatorId>:<limit>` | 30 seconds |
+| Authenticated recent tips | `analytics:recent:<creatorId>:<limit>:<cursor-or-head>` | 30 seconds |
+| Collaborator earnings | `analytics:collaborators:<creatorId>` | 30 seconds |
+| Public recent tips | `analytics:public-recent:<slug>:<limit>:<cursor-or-head>` | 15 seconds |
+| Public creator profile | `creator:<slug>` | 60 seconds |
+
+Profile claim, rename, profile update, and split update invalidate the affected
+`creator:<slug>` entry (rename invalidates both old and new slugs). Analytics
+entries are not explicitly invalidated when tips are indexed or creator splits
+change; they expire naturally. A creator's dashboard aggregates can therefore
+be up to 30 seconds stale, public tip feeds up to 15 seconds stale, and a
+cached public profile up to 60 seconds stale. Updating a profile invalidates
+its profile key immediately, but does not invalidate cached analytics.
 
 ## Environment Variables
 
@@ -39,6 +136,7 @@ HORIZON_URL - Horizon REST endpoint (default: https://horizon-testnet.stellar.or
 NETWORK_PASSPHRASE - Stellar network passphrase (default: "Test SDF Network ; September 2015")
 USDC_CONTRACT_ID (required on mainnet) - USDC Stellar Asset Contract ID (default on testnet/local: CBIELTK6YBZJU5UP2WWQEUCYKLPU6AUNZ2BQ4WWFEIE3USCIHMXQDAMA, the testnet one)
 INDEXER_START_LEDGER - Ledger to begin indexing from (default: 0)
+INDEXER_RPC_TIMEOUT_MS - Timeout for indexer RPC calls in milliseconds (default: 5000)
 MAX_WEBHOOKS_PER_CREATOR - Most webhooks one creator may register (default: 5, 0 removes the cap)
 WEBHOOK_DELIVERY_RETENTION_DAYS - Prune successful deliveries older than this (default: 30, 0 disables)
 WEBHOOK_DELIVERY_FAILURE_RETENTION_DAYS - Prune failed deliveries older than this (default: 90, 0 disables)
@@ -53,21 +151,21 @@ QR_RATE_LIMIT - Per-IP cap on the QR endpoints, req/min (default: 10)
 APP_BASE_URL - Frontend base URL (default: http://localhost:3000)
 CORS_ALLOWED_ORIGINS - Comma-separated origins allowed through CORS in production (default: just APP_BASE_URL; ignored outside production, where any origin is allowed)
 
-## API Overview  (base: /api/v1)
+## API Overview (base: /api/v1)
 
-GET  /health                 - Simple liveness ping
-GET  /health/live            - Liveness (process up, no dependency checks)
-GET  /health/ready           - Readiness (PostgreSQL + Redis reachable; 503 if not)
+GET /health - Simple liveness ping
+GET /health/live - Liveness (process up, no dependency checks)
+GET /health/ready - Readiness (PostgreSQL + Redis reachable; 503 if not)
 
-POST /auth/challenge         - Issue one-time sign-in nonce
-POST /auth/verify            - Verify signature, return JWT
-GET  /auth/me                - Current user (JWT)
+POST /auth/challenge - Issue one-time sign-in nonce
+POST /auth/verify - Verify signature, return JWT
+GET /auth/me - Current user (JWT)
 
-GET    /creators/:slug       - Public creator profile
-GET    /creators/check/:slug - Slug availability
-POST   /creators/claim       - Claim a slug (JWT)
-PATCH  /creators/me          - Update profile (JWT)
-PATCH  /creators/me/splits   - Update splits (JWT)
+GET /creators/:slug - Public creator profile
+GET /creators/check/:slug - Slug availability
+POST /creators/claim - Claim a slug (JWT)
+PATCH /creators/me - Update profile (JWT)
+PATCH /creators/me/splits - Update splits (JWT)
 
 Reserved slugs (api, admin, dashboard, onboarding, settings, login, logout,
 auth, support, help, about, terms, privacy, static, _next, novatip — see
@@ -94,9 +192,9 @@ for tip notifications. It is private: the public creator endpoint and
 world-readable columns and omits it. Send null to clear a stored address; omit
 the field to leave it unchanged.
 
-GET /qr/:slug                - QR code SVG
-GET /qr/:slug/png            - QR code PNG download
-GET /resolve/:slug           - Full tip-page data
+GET /qr/:slug - QR code SVG
+GET /qr/:slug/png - QR code PNG download
+GET /resolve/:slug - Full tip-page data
 
 Tip URLs: the canonical tip page URL is APP_BASE_URL/:slug (no "@" prefix —
 the "@" belongs to the on-chain jarId, not the web URL). This is the shape
@@ -105,10 +203,10 @@ produced by /qr/:slug, /qr/:slug/png, and the tipUrl field returned by
 compatibility with codes already printed, but should not be generated by
 new integrations.
 
-GET /analytics/totals        - Total tips, amount, supporters (JWT)
-GET /analytics/timeseries    - Daily breakdown ?days=30 (JWT)
+GET /analytics/totals - Total tips, amount, supporters (JWT)
+GET /analytics/timeseries - Daily breakdown ?days=30 (JWT)
 GET /analytics/top-supporters- Ranked supporters ?limit=10 (JWT)
-GET /analytics/recent        - Live tip feed ?limit=20&cursor=<opaque> (JWT)
+GET /analytics/recent - Live tip feed ?limit=20&cursor=<opaque> (JWT)
 GET /analytics/collaborators - Per-recipient earnings breakdown (JWT)
 
 /analytics/recent is cursor-paginated. It takes ?limit= (1–100, default 20)
@@ -183,7 +281,7 @@ record, so a caller can see that tips after that point are exact. Splits stored
 in a shape this endpoint cannot read fail with 500 and error.code
 "MALFORMED_SPLITS" rather than quietly dropping a recipient.
 
-GET  /public/:slug/recent    - Public supporter feed ?limit=20&cursor=<opaque>
+GET /public/:slug/recent - Public supporter feed ?limit=20&cursor=<opaque>
 
 /public/:slug/recent is the only unauthenticated view of a creator's tips. The
 public tip page shows a supporter feed to visitors who have no account, and
@@ -214,10 +312,10 @@ routes live in their own Fastify plugin (src/modules/public/) rather than as an
 auth carve-out inside the analytics plugin, whose onRequest hook applies to
 every route registered in it.
 
-GET    /webhooks             - List webhooks (JWT)
-POST   /webhooks             - Register webhook (JWT)
-PATCH  /webhooks/:id         - Enable or disable a webhook (JWT)
-DELETE /webhooks/:id         - Remove webhook (JWT)
+GET /webhooks - List webhooks (JWT)
+POST /webhooks - Register webhook (JWT)
+PATCH /webhooks/:id - Enable or disable a webhook (JWT)
+DELETE /webhooks/:id - Remove webhook (JWT)
 
 GET /webhooks takes `?limit=` (1–100, default 50) and `?offset=`, the same
 paging shape as GET /webhooks/:id/deliveries below. A limit above the
@@ -254,7 +352,7 @@ retrying after a dropped response cannot accidentally re-enable a webhook it
 meant to pause. A webhook belonging to another creator answers 404, the same as
 one that does not exist.
 
-GET  /webhooks/:id/deliveries - Recent delivery attempts (JWT)
+GET /webhooks/:id/deliveries - Recent delivery attempts (JWT)
 
 Every dispatch attempt is already recorded in WebhookDelivery; this is the way
 to read it back. Attempts come newest first, each entry carrying the HTTP status
@@ -289,8 +387,8 @@ returns 404.
 Note that history is not kept forever — see Webhook Delivery Retention for the
 windows, which default to 30 days for successes and 90 for failures.
 
-POST /webhooks/:id/ping      - Send a signed test payload (JWT)
-POST /webhooks/:id/secret    - Rotate the signing secret (JWT)
+POST /webhooks/:id/ping - Send a signed test payload (JWT)
+POST /webhooks/:id/secret - Rotate the signing secret (JWT)
 
 Sends a test delivery to the webhook immediately and returns what the receiver
 did with it, so a creator can confirm the URL and their signature check before a
@@ -355,7 +453,7 @@ contained a tip. Without this, a restart after a quiet week re-scans every
 ledger since — and a cursor old enough to fall outside the RPC's event
 retention window makes the first fetch fail outright.
 
-Chain head is read via getLatestLedger *before* each event fetch, so an empty
+Chain head is read via getLatestLedger _before_ each event fetch, so an empty
 result is known to cover everything up to it; reading afterwards could skip a
 tip that landed in between. Both the head read and the cursor write are
 throttled to once a minute (IDLE_CHECK_INTERVAL_MS in src/indexer/cursor.ts),
@@ -375,6 +473,7 @@ A failed head read is logged and skipped — it never blocks event indexing.
    contained a tip.
 5. Point SOROBAN_RPC_URL at an unreachable host and confirm the indexer logs
    "could not read chain head" and keeps polling rather than stalling.
+
 ### Cursor semantics
 
 fetchTipEvents treats startLedger as inclusive, so after handling a batch the
@@ -386,6 +485,39 @@ through its highest ledger. That ledger is held back and re-fetched on the next
 poll rather than skipped — so only ledgers known to be complete are marked done.
 Persisting a tip is idempotent (upsert on txHash), but webhook and email
 dispatch are not, which is why the cursor must not linger on a handled ledger.
+
+### Reindexing from a chosen ledger
+
+The saved `IndexerCursor` takes precedence over `INDEXER_START_LEDGER` after
+the indexer has processed any ledger. To rescan from ledger `N`:
+
+1. Stop the backend and back up the database.
+2. Set `INDEXER_START_LEDGER=N` in `.env`, where `N` is the first ledger to
+   fetch. Choose a recent ledger that covers the events you need; old Soroban
+   events may no longer be available from the RPC provider.
+3. Reset the saved cursor so startup uses the configured start ledger:
+   `DELETE FROM "IndexerCursor" WHERE id = 1;`
+4. Restart the backend. It begins fetching from `N` and persists a new cursor
+   as it progresses.
+
+An already-indexed transaction is not inserted a second time: `Tip.txHash` is
+the unique key for an upsert, and an existing row is left unchanged. Replaying
+its event does still run webhook and email dispatch again; those side effects
+are not deduplicated. Consider disabling webhooks and email before a replay if
+duplicate notifications would be a problem.
+
+### Switching to a newly deployed contract
+
+Set `TIP_SPLITTER_CONTRACT_ID` to the new contract and choose a start ledger
+near its deployment as described in
+[Run against a freshly deployed testnet contract](#run-against-a-freshly-deployed-testnet-contract).
+Stop the backend and delete the cursor row before restarting, or the saved
+cursor will resume indexing at the old position. The `Tip` rows do not record
+their source contract or network, so pointing an existing database at another
+contract can mix old and new tips in the same creator's analytics. Prefer a
+separate database for the new deployment. If reusing a database, back it up
+and deliberately remove or archive the old deployment's tip rows before
+restarting; resetting the cursor alone does not remove them.
 
 ### Manual verification against testnet
 
@@ -418,6 +550,7 @@ provider refused.
 ## Webhook Signatures
 
 Each webhook delivery carries two headers to authenticate origin and prevent replay attacks:
+
 - `X-Novatip-Signature`: `sha256=<hex>`
 - `X-Novatip-Timestamp`: `<unix-timestamp-in-seconds>`
 
@@ -428,9 +561,11 @@ The signature is computed as an HMAC-SHA256 hex digest over the timestamp and ra
 ```javascript
 const signatureHeader = req.headers["x-novatip-signature"]; // sha256=<hex>
 const timestamp = req.headers["x-novatip-timestamp"]; // e.g. "1729166400"
-const expectedSignature = "sha256=" + createHmac("sha256", webhookSecret)
-  .update(`${timestamp}.${rawBody}`)
-  .digest("hex");
+const expectedSignature =
+  "sha256=" +
+  createHmac("sha256", webhookSecret)
+    .update(`${timestamp}.${rawBody}`)
+    .digest("hex");
 
 // 1. Verify signatures match in constant time
 const valid = crypto.timingSafeEqual(
@@ -583,8 +718,8 @@ prisma/migrations/20260908000000_webhook_delivery_retention_index.
 
 1. Seed rows on both sides of a window:
    `INSERT INTO "WebhookDelivery" (id, "webhookId", success, payload, "attemptedAt")
-    SELECT gen_random_uuid()::text, '<id>', true, '{}'::jsonb, now() - interval '60 days'
-    FROM generate_series(1, 2000);`
+ SELECT gen_random_uuid()::text, '<id>', true, '{}'::jsonb, now() - interval '60 days'
+ FROM generate_series(1, 2000);`
 2. Start the server and wait for the first run (60s after boot).
 3. Expect a "pruned webhook deliveries" log line and the aged rows gone, with
    rows inside the window untouched.
@@ -593,16 +728,16 @@ prisma/migrations/20260908000000_webhook_delivery_retention_index.
 
 ## Scripts
 
-npm run dev               - hot reload
-npm run build             - compile TypeScript
-npm run start             - run compiled output
-npm run test              - jest
-npm run typecheck         - tsc --noEmit
-npm run lint              - eslint
-npm run db:generate       - regenerate Prisma client
-npm run db:migrate        - apply migrations (dev)
+npm run dev - hot reload
+npm run build - compile TypeScript
+npm run start - run compiled output
+npm run test - jest
+npm run typecheck - tsc --noEmit
+npm run lint - eslint
+npm run db:generate - regenerate Prisma client
+npm run db:migrate - apply migrations (dev)
 npm run db:migrate:deploy - apply migrations (production)
-npm run db:studio         - open Prisma Studio
+npm run db:studio - open Prisma Studio
 npm run check:reserved-slugs - report existing creators holding a reserved slug
 
 ## License

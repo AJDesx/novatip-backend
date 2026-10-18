@@ -13,6 +13,10 @@ import { logger } from "../../utils/logger.js";
 
 const healthLogger = logger.child({ component: "health" });
 
+// Two seconds leaves room for a slow dependency while keeping readiness probes
+// inside the usual orchestrator timeout window.
+const PROBE_TIMEOUT_MS = 2_000;
+
 export interface DependencyStatus {
   status: "up" | "down";
   latencyMs: number;
@@ -36,8 +40,18 @@ async function timed(
   probe: () => Promise<void>,
 ): Promise<DependencyStatus> {
   const start = Date.now();
+  let timeout: ReturnType<typeof setTimeout> | undefined;
   try {
-    await probe();
+    await Promise.race([
+      probe(),
+      new Promise<never>((_, reject) => {
+        timeout = setTimeout(
+          () =>
+            reject(new Error(`probe timed out after ${PROBE_TIMEOUT_MS}ms`)),
+          PROBE_TIMEOUT_MS,
+        );
+      }),
+    ]);
     return { status: "up", latencyMs: Date.now() - start };
   } catch (err) {
     healthLogger.error({ err, dependency }, "readiness probe failed");
@@ -46,6 +60,8 @@ async function timed(
       latencyMs: Date.now() - start,
       error: "Dependency probe failed.",
     };
+  } finally {
+    if (timeout !== undefined) clearTimeout(timeout);
   }
 }
 

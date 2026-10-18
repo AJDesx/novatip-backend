@@ -118,7 +118,7 @@ describe("indexer persist (#83 logging unregistered jars & #84 named cursor id)"
     expect(upsertTipMock).not.toHaveBeenCalled();
   });
 
-  it("persists tip when creator is found for jarId", async () => {
+  it("writes a tip row when jarId belongs to a known creator (#86)", async () => {
     findUniqueCreatorMock.mockResolvedValue({ id: "creator_valid" });
 
     await persistTip(sampleEvent, "0xfeedbeef");
@@ -127,14 +127,70 @@ describe("indexer persist (#83 logging unregistered jars & #84 named cursor id)"
       where: { jarId: sampleEvent.jarId },
     });
     expect(loggerInfoMock).not.toHaveBeenCalled();
-    expect(upsertTipMock).toHaveBeenCalledWith(
+    expect(upsertTipMock).toHaveBeenCalledWith({
+      where: { txHash: "0xfeedbeef" },
+      update: {},
+      create: {
+        txHash: "0xfeedbeef",
+        ledger: sampleEvent.ledger,
+        ledgerAt: new Date(sampleEvent.timestamp),
+        fromAddress: sampleEvent.from,
+        amount: sampleEvent.amount.toString(),
+        message: sampleEvent.message,
+        creatorId: "creator_valid",
+      },
+    });
+  });
+
+  it("skips writing without creating a row when jarId is unknown (#86)", async () => {
+    findUniqueCreatorMock.mockResolvedValue(null);
+
+    await persistTip(sampleEvent, "0xunknownjar");
+
+    expect(findUniqueCreatorMock).toHaveBeenCalledWith({
+      where: { jarId: sampleEvent.jarId },
+    });
+    expect(upsertTipMock).not.toHaveBeenCalled();
+  });
+
+  it("is idempotent: processing the same txHash twice produces one row (#86)", async () => {
+    findUniqueCreatorMock.mockResolvedValue({ id: "creator_valid" });
+
+    const tipStore = new Map<string, Record<string, unknown>>();
+    upsertTipMock.mockImplementation(async (args: Record<string, unknown>) => {
+      const where = args["where"] as { txHash: string };
+      const create = args["create"] as Record<string, unknown>;
+      const update = args["update"] as Record<string, unknown> | undefined;
+      const txHash = where.txHash;
+      if (!tipStore.has(txHash)) {
+        tipStore.set(txHash, { id: "tip_row_1", ...create });
+      } else if (update && Object.keys(update).length > 0) {
+        Object.assign(tipStore.get(txHash)!, update);
+      }
+      return tipStore.get(txHash)!;
+    });
+
+    // First processing of the transaction
+    await persistTip(sampleEvent, "0xreplayedtx");
+    expect(tipStore.size).toBe(1);
+
+    // Replay of the same transaction
+    await persistTip(sampleEvent, "0xreplayedtx");
+    expect(tipStore.size).toBe(1);
+
+    expect(upsertTipMock).toHaveBeenCalledTimes(2);
+    expect(upsertTipMock).toHaveBeenNthCalledWith(
+      1,
       expect.objectContaining({
-        where: { txHash: "0xfeedbeef" },
-        create: expect.objectContaining({
-          creatorId: "creator_valid",
-          txHash: "0xfeedbeef",
-          fromAddress: sampleEvent.from,
-        }),
+        where: { txHash: "0xreplayedtx" },
+        update: {},
+      }),
+    );
+    expect(upsertTipMock).toHaveBeenNthCalledWith(
+      2,
+      expect.objectContaining({
+        where: { txHash: "0xreplayedtx" },
+        update: {},
       }),
     );
   });
