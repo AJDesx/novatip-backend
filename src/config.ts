@@ -111,6 +111,24 @@ export const config = {
             "CBIELTK6YBZJU5UP2WWQEUCYKLPU6AUNZ2BQ4WWFEIE3USCIHMXQDAMA",
           ),
     indexerStartLedger: optionalInt("INDEXER_START_LEDGER", 0, 0),
+    indexerPollIntervalMs: optionalInt("INDEXER_POLL_INTERVAL_MS", 6_000, 1),
+    indexerPollLimit: optionalInt("INDEXER_POLL_LIMIT", 200, 1),
+  },
+
+  indexer: {
+    /**
+     * How often (in ms) the indexer loop polls the Soroban RPC for new TipReceived events.
+     * Defaults to 6,000 ms (6 seconds), roughly matching Stellar's ~5s average ledger close time
+     * so new events are discovered promptly without hammering the RPC.
+     */
+    pollIntervalMs: optionalInt("INDEXER_POLL_INTERVAL_MS", 6_000, 1),
+
+    /**
+     * Maximum number of TipReceived events fetched from Soroban RPC per poll iteration.
+     * Defaults to 200, which provides high throughput during catch-up or backfill
+     * without exceeding Soroban RPC getEvents page limits or overwhelming memory.
+     */
+    pollLimit: optionalInt("INDEXER_POLL_LIMIT", 200, 1),
   },
 
   webhooks: {
