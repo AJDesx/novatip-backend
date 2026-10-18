@@ -176,4 +176,31 @@ describe("verifyChallenge (#88 single query and #89 slug collision handling)", (
 
     expect(createMock).toHaveBeenCalledTimes(MAX_CREATOR_CREATE_ATTEMPTS);
   });
+
+  it("handles concurrent first sign-in race gracefully without 500 and keeps isNewUser: true (#87)", async () => {
+    // Initial lookup sees no creator (new user)
+    findUniqueMock.mockResolvedValueOnce(null);
+
+    const winningCreator = makeFakeCreator({
+      walletAddress: wallet,
+      slug: "user_winner",
+    });
+
+    // Create fails with P2002 on walletAddress because a concurrent request just inserted it
+    createMock.mockRejectedValueOnce(p2002Error(["walletAddress"]));
+
+    // Recovery lookup finds the winner row
+    findUniqueMock.mockResolvedValueOnce(winningCreator);
+
+    const result = await verifyChallenge(wallet, sig, signJwtMock);
+
+    expect(result).toEqual({ jwt: "signed-jwt-token", isNewUser: true });
+    expect(findUniqueMock).toHaveBeenCalledTimes(2);
+    expect(createMock).toHaveBeenCalledTimes(1);
+    expect(signJwtMock).toHaveBeenCalledWith({
+      sub: winningCreator.id,
+      wallet: wallet,
+      slug: winningCreator.slug,
+    });
+  });
 });

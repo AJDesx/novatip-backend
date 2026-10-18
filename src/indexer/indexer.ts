@@ -33,6 +33,7 @@ import {
   planIdleAdvance,
 } from "./cursor.js";
 import { fetchLatestLedger } from "./rpc.js";
+import { calculatePollBackoff } from "./backoff.js";
 import { logger } from "../utils/logger.js";
 import { persistTip, updateCursor, readCursor } from "./persist.js";
 import { dispatchWebhooks } from "../modules/webhooks/webhooks.service.js";
@@ -141,6 +142,7 @@ async function runLoop(options?: IndexerOptions): Promise<void> {
   // Cursor bookkeeping for quiet periods
   let persistedCursor = savedCursor;
   let lastIdleCheckAt: number | null = null;
+  let consecutiveFailures = 0;
 
   indexerLogger.info({ startLedger }, "resuming from ledger");
 
@@ -155,7 +157,10 @@ async function runLoop(options?: IndexerOptions): Promise<void> {
         lastIdleCheckAt = Date.now();
 
         try {
-          observedHead = await fetchLatestLedger(config.stellar.rpcUrl);
+          observedHead = await fetchLatestLedger(
+            config.stellar.rpcUrl,
+            config.stellar.rpcTimeoutMs,
+          );
         } catch (err) {
           // Cursor freshness is an optimisation — never let it stop indexing.
           indexerLogger.warn({ err }, "could not read chain head");
@@ -219,7 +224,17 @@ async function runLoop(options?: IndexerOptions): Promise<void> {
           persistedCursor = advance.cursorLedger;
         }
       }
+
+      // Successful poll resets consecutive failure count
+      consecutiveFailures = 0;
     } catch (err) {
+      consecutiveFailures++;
+      const backoffMs = calculatePollBackoff(consecutiveFailures);
+      indexerLogger.error(
+        { err, startLedger, consecutiveFailures, backoffMs },
+        "poll error",
+      );
+      await sleep(backoffMs);
       indexerLogger.error({ err, startLedger }, "poll error");
       if (!running) break;
       // Back off slightly on error to avoid hammering the RPC
