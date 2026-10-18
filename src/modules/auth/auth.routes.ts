@@ -9,6 +9,7 @@
 import type { FastifyPluginAsync, FastifyRequest, FastifyReply } from "fastify";
 import { z } from "zod";
 import { config } from "../../config.js";
+import { db } from "../../db.js";
 import { generateChallenge, verifyChallenge } from "./auth.service.js";
 
 /**
@@ -113,6 +114,25 @@ export const authRoutes: FastifyPluginAsync = async (app) => {
 
   // ── GET /me ────────────────────────────────────────────────────────────────
   app.get("/me", { onRequest: [app.authenticate] }, async (request, reply) => {
-    return reply.send({ user: request.user });
+    const creator = await db.creator.findUnique({
+      where: { id: request.user.sub },
+      select: { slug: true },
+    });
+
+    if (!creator) {
+      return reply.status(401).send({
+        error: {
+          code: "UNAUTHORIZED",
+          message: "Creator not found.",
+        },
+      });
+    }
+
+    return reply.send({
+      user: {
+        ...request.user,
+        slug: creator.slug,
+      },
+    });
   });
 };
