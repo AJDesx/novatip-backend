@@ -10,6 +10,10 @@
 import { db } from "../../db.js";
 import { redis } from "../../redis.js";
 
+// Two seconds leaves room for a slow dependency while keeping readiness probes
+// inside the usual orchestrator timeout window.
+const PROBE_TIMEOUT_MS = 2_000;
+
 export interface DependencyStatus {
   status: "up" | "down";
   latencyMs: number;
@@ -30,8 +34,18 @@ export interface ReadinessReport {
  */
 async function timed(probe: () => Promise<void>): Promise<DependencyStatus> {
   const start = Date.now();
+  let timeout: ReturnType<typeof setTimeout> | undefined;
   try {
-    await probe();
+    await Promise.race([
+      probe(),
+      new Promise<never>((_, reject) => {
+        timeout = setTimeout(
+          () =>
+            reject(new Error(`probe timed out after ${PROBE_TIMEOUT_MS}ms`)),
+          PROBE_TIMEOUT_MS,
+        );
+      }),
+    ]);
     return { status: "up", latencyMs: Date.now() - start };
   } catch (err) {
     return {
@@ -39,6 +53,8 @@ async function timed(probe: () => Promise<void>): Promise<DependencyStatus> {
       latencyMs: Date.now() - start,
       error: err instanceof Error ? err.message : String(err),
     };
+  } finally {
+    if (timeout !== undefined) clearTimeout(timeout);
   }
 }
 

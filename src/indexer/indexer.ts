@@ -20,7 +20,6 @@
 
 import {
   fetchTipEvents,
-  getNetwork,
   networkFromEnv,
   type NetworkConfig,
   type TipEvent,
@@ -46,16 +45,13 @@ const indexerLogger = logger.child({ component: "indexer" });
 // ── Build network config ──────────────────────────────────────────────────────
 
 function resolveNetwork(): NetworkConfig {
-  if (config.stellar.rpcUrl) {
-    return networkFromEnv({
-      name: config.stellar.network,
-      rpcUrl: config.stellar.rpcUrl,
-      horizonUrl: config.stellar.horizonUrl,
-      passphrase: config.stellar.passphrase,
-      usdcContractId: config.stellar.usdcContractId,
-    });
-  }
-  return getNetwork(config.stellar.network);
+  return networkFromEnv({
+    name: config.stellar.network,
+    rpcUrl: config.stellar.rpcUrl,
+    horizonUrl: config.stellar.horizonUrl,
+    passphrase: config.stellar.passphrase,
+    usdcContractId: config.stellar.usdcContractId,
+  });
 }
 
 // ── Indexer loop ──────────────────────────────────────────────────────────────

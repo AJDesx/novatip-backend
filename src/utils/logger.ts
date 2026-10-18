@@ -18,6 +18,17 @@ import { config } from "../config.js";
 export function buildLoggerOptions(isProduction: boolean): LoggerOptions {
   return {
     level: isProduction ? "info" : "debug",
+    redact: {
+      paths: [
+        "headers.authorization",
+        "headers.cookie",
+        "req.headers.authorization",
+        "req.headers.cookie",
+        "request.headers.authorization",
+        "request.headers.cookie",
+      ],
+      censor: "[Redacted]",
+    },
     ...(isProduction
       ? {}
       : { transport: { target: "pino-pretty", options: { colorize: true } } }),
