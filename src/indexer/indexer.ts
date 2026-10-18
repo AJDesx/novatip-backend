@@ -32,13 +32,25 @@ import {
   planIdleAdvance,
 } from "./cursor.js";
 import { fetchLatestLedger } from "./rpc.js";
+import { calculatePollBackoff } from "./backoff.js";
 import { logger } from "../utils/logger.js";
 import { persistTip, updateCursor, readCursor } from "./persist.js";
 import { dispatchWebhooks } from "../modules/webhooks/webhooks.service.js";
 import { sendTipNotification } from "../modules/notifications/email.service.js";
 
-const POLL_INTERVAL_MS = 6_000;
-const POLL_LIMIT = 200;
+/**
+ * How often (in ms) the indexer loop polls the Soroban RPC for new TipReceived events.
+ * Defaults to 6,000 ms (6 seconds), roughly matching Stellar's ~5s average ledger close time
+ * so new events are discovered promptly without hammering the RPC.
+ */
+export const POLL_INTERVAL_MS = config.indexer.pollIntervalMs;
+
+/**
+ * Maximum number of TipReceived events fetched from Soroban RPC per poll iteration.
+ * Defaults to 200, which provides high throughput during catch-up or backfill
+ * without exceeding Soroban RPC getEvents page limits or overwhelming memory.
+ */
+export const POLL_LIMIT = config.indexer.pollLimit;
 
 const indexerLogger = logger.child({ component: "indexer" });
 
@@ -57,6 +69,29 @@ function resolveNetwork(): NetworkConfig {
 // ── Indexer loop ──────────────────────────────────────────────────────────────
 
 let running = false;
+let wakeSleep: (() => void) | null = null;
+let sleepTimeout: NodeJS.Timeout | null = null;
+
+function cleanupSleep(): void {
+  if (sleepTimeout) {
+    clearTimeout(sleepTimeout);
+    sleepTimeout = null;
+  }
+  wakeSleep = null;
+}
+
+function interruptibleSleep(ms: number): Promise<void> {
+  return new Promise((resolve) => {
+    wakeSleep = () => {
+      cleanupSleep();
+      resolve();
+    };
+    sleepTimeout = setTimeout(() => {
+      cleanupSleep();
+      resolve();
+    }, ms);
+  });
+}
 
 /**
  * The currently running loop, so stopIndexer() has something to await and a
@@ -65,22 +100,31 @@ let running = false;
  */
 let loop: Promise<void> | null = null;
 
+export interface IndexerOptions {
+  pollIntervalMs?: number;
+  pollLimit?: number;
+}
+
 /**
  * Start the indexer loop. Safe to call more than once — a call made while
  * the loop is already running returns the same promise rather than starting
  * a second one. Logs errors but never crashes the process.
  */
-export function startIndexer(): Promise<void> {
+export function startIndexer(options?: IndexerOptions): Promise<void> {
   if (loop) return loop;
   running = true;
 
-  loop = runLoop().finally(() => {
+  loop = runLoop(options).finally(() => {
     loop = null;
+    cleanupSleep();
   });
   return loop;
 }
 
-async function runLoop(): Promise<void> {
+async function runLoop(options?: IndexerOptions): Promise<void> {
+  const pollIntervalMs = options?.pollIntervalMs ?? POLL_INTERVAL_MS;
+  const pollLimit = options?.pollLimit ?? POLL_LIMIT;
+
   const network = resolveNetwork();
   const contractId = config.stellar.tipSplitterContractId;
 
@@ -94,6 +138,7 @@ async function runLoop(): Promise<void> {
   // Cursor bookkeeping for quiet periods
   let persistedCursor = savedCursor;
   let lastIdleCheckAt: number | null = null;
+  let consecutiveFailures = 0;
 
   indexerLogger.info({ startLedger }, "resuming from ledger");
 
@@ -108,7 +153,10 @@ async function runLoop(): Promise<void> {
         lastIdleCheckAt = Date.now();
 
         try {
-          observedHead = await fetchLatestLedger(config.stellar.rpcUrl);
+          observedHead = await fetchLatestLedger(
+            config.stellar.rpcUrl,
+            config.stellar.rpcTimeoutMs,
+          );
         } catch (err) {
           // Cursor freshness is an optimisation — never let it stop indexing.
           indexerLogger.warn({ err }, "could not read chain head");
@@ -119,7 +167,7 @@ async function runLoop(): Promise<void> {
         contractId,
         network,
         startLedger,
-        limit: POLL_LIMIT,
+        limit: pollLimit,
       });
 
       if (events.length > 0) {
@@ -127,9 +175,9 @@ async function runLoop(): Promise<void> {
           { eventCount: events.length, startLedger },
           "processing events",
         );
-        if (isSaturatedLedger(events, POLL_LIMIT)) {
+        if (isSaturatedLedger(events, pollLimit)) {
           indexerLogger.warn(
-            { ledger: events[0]!.ledger, limit: POLL_LIMIT },
+            { ledger: events[0]!.ledger, limit: pollLimit },
             "ledger returned a full batch — any events beyond the limit are unreachable",
           );
         }
@@ -137,7 +185,7 @@ async function runLoop(): Promise<void> {
         const { toProcess, nextStartLedger, cursorLedger } = planBatch(
           events,
           startLedger,
-          POLL_LIMIT,
+          pollLimit,
         );
 
         for (const event of toProcess) {
@@ -172,14 +220,26 @@ async function runLoop(): Promise<void> {
           persistedCursor = advance.cursorLedger;
         }
       }
+
+      // Successful poll resets consecutive failure count
+      consecutiveFailures = 0;
     } catch (err) {
+      consecutiveFailures++;
+      const backoffMs = calculatePollBackoff(consecutiveFailures);
+      indexerLogger.error(
+        { err, startLedger, consecutiveFailures, backoffMs },
+        "poll error",
+      );
+      await sleep(backoffMs);
       indexerLogger.error({ err, startLedger }, "poll error");
+      if (!running) break;
       // Back off slightly on error to avoid hammering the RPC
-      await sleep(POLL_INTERVAL_MS * 2);
+      await interruptibleSleep(pollIntervalMs * 2);
       continue;
     }
 
-    await sleep(POLL_INTERVAL_MS);
+    if (!running) break;
+    await interruptibleSleep(pollIntervalMs);
   }
 
   indexerLogger.info("stopped");
@@ -188,19 +248,18 @@ async function runLoop(): Promise<void> {
 /**
  * Stop the indexer loop and wait for its current iteration to finish.
  *
- * Setting the flag alone does not stop anything in progress: the loop only
- * checks `running` between iterations, so a tip that is mid-way through
- * handleEvent (persist, then webhooks, then email) when this is called keeps
- * running on whatever db connection and clients were live when it started.
- * The caller must await the returned promise before tearing either down —
- * shutdown() in app.ts is the only caller today. Resolving the sleep between
- * iterations sooner is a separate concern (#81); this only guarantees the
- * caller does not close anything out from underneath an iteration already
- * under way.
+ * Setting running = false signals the loop to stop. If the loop is parked in
+ * sleep between iterations or during error backoff, wakeSleep() wakes it
+ * immediately rather than waiting out the sleep interval. An iteration already
+ * in progress is still allowed to finish before the returned promise resolves.
+ * Safe to call when the indexer is not running.
  */
 export function stopIndexer(): Promise<void> {
   running = false;
   indexerLogger.info("stopping");
+  if (wakeSleep) {
+    wakeSleep();
+  }
   return loop ?? Promise.resolve();
 }
 
@@ -220,10 +279,4 @@ async function handleEvent(event: TipEvent): Promise<void> {
   } catch (err) {
     indexerLogger.error({ err, txHash }, "failed to handle event");
   }
-}
-
-// ── Helpers ───────────────────────────────────────────────────────────────────
-
-function sleep(ms: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, ms));
 }

@@ -164,6 +164,77 @@ export async function claimSlug(input: ClaimSlugInput) {
   return creator;
 }
 
+export interface RenameSlugInput {
+  creatorId: string;
+  slug: string;
+}
+
+/**
+ * Rename a creator's public slug.
+ *
+ * Reuses what claimSlug enforces:
+ * - Slug pattern (3–32 lowercase letters, numbers, hyphens, underscores)
+ * - Reserved slug list
+ * - Availability pre-check and unique constraint conflict handling (409)
+ *
+ * Leaves jarId and splits untouched: on-chain jar remains registered under
+ * its original jarId, changing only where the tip page resolves.
+ * Invalidates the resolver cache for both the old and new slug.
+ */
+export async function renameSlug(input: RenameSlugInput) {
+  if (!SLUG_REGEX.test(input.slug)) {
+    throw Object.assign(
+      new Error(
+        "Slug must be 3–32 characters: lowercase letters, numbers, hyphens, underscores.",
+      ),
+      { statusCode: 400 },
+    );
+  }
+
+  if (RESERVED_SLUGS.has(input.slug)) {
+    throw Object.assign(
+      new Error(`"${input.slug}" is a reserved slug and can't be claimed.`),
+      { statusCode: 400 },
+    );
+  }
+
+  const current = await db.creator.findUnique({
+    where: { id: input.creatorId },
+  });
+  if (!current) {
+    throw Object.assign(new Error("Creator not found."), { statusCode: 404 });
+  }
+
+  const oldSlug = current.slug;
+
+  const existing = await db.creator.findUnique({ where: { slug: input.slug } });
+  if (existing && existing.id !== input.creatorId) {
+    throw Object.assign(new Error("This slug is already taken."), {
+      statusCode: 409,
+      code: "SLUG_TAKEN",
+    });
+  }
+
+  let creator;
+  try {
+    creator = await db.creator.update({
+      where: { id: input.creatorId },
+      data: {
+        slug: input.slug,
+      },
+    });
+  } catch (err) {
+    throw toClaimConflict(err);
+  }
+
+  await cacheInvalidate(`creator:${oldSlug}`);
+  if (input.slug !== oldSlug) {
+    await cacheInvalidate(`creator:${input.slug}`);
+  }
+
+  return creator;
+}
+
 /**
  * A losing concurrent claim hits the DB's unique constraint (slug and jarId
  * are both @unique) as Prisma error P2002, not the pre-check above. That

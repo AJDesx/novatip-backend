@@ -9,7 +9,24 @@
  * SDK so the indexer keeps a single event-shaped dependency on it.
  */
 
-const TIMEOUT_MS = 5_000;
+/**
+ * Default RPC request timeout in milliseconds.
+ * 5 seconds is chosen as the default because it gives a healthy Soroban RPC
+ * node ample time to answer a getLatestLedger call during normal operation
+ * without stalling indexer idle checks, while being configurable via
+ * config.stellar.rpcTimeoutMs (INDEXER_RPC_TIMEOUT_MS) to avoid spurious
+ * warnings when polling slower or more distant endpoints.
+ */
+const DEFAULT_TIMEOUT_MS = 5_000;
+
+function getRpcTimeout(): number {
+  const envVal = process.env["INDEXER_RPC_TIMEOUT_MS"];
+  if (envVal) {
+    const parsed = Number.parseInt(envVal, 10);
+    if (!Number.isNaN(parsed) && parsed > 0) return parsed;
+  }
+  return DEFAULT_TIMEOUT_MS;
+}
 
 interface LatestLedgerResponse {
   result?: { sequence?: number };
@@ -20,11 +37,15 @@ interface LatestLedgerResponse {
  * Fetch the sequence number of the latest closed ledger.
  *
  * @param rpcUrl - Soroban RPC endpoint
+ * @param timeoutMs - Request timeout in milliseconds (defaults to configured timeout or 5s)
  * @throws if the endpoint is unreachable, times out, or returns no sequence
  */
-export async function fetchLatestLedger(rpcUrl: string): Promise<number> {
+export async function fetchLatestLedger(
+  rpcUrl: string,
+  timeoutMs: number = getRpcTimeout(),
+): Promise<number> {
   const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), TIMEOUT_MS);
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
 
   const res = await fetch(rpcUrl, {
     method: "POST",

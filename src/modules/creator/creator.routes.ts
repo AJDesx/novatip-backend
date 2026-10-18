@@ -6,6 +6,7 @@
  * POST /api/v1/creators/claim          — claim a slug (auth required)
  * PATCH /api/v1/creators/me            — update profile (auth required)
  * PATCH /api/v1/creators/me/splits     — update on-chain splits record (auth required)
+ * PATCH /api/v1/creators/me/slug       — rename slug (auth required)
  */
 
 import type { FastifyPluginAsync } from "fastify";
@@ -13,12 +14,17 @@ import { z } from "zod";
 import {
   getCreatorBySlug,
   claimSlug,
+  renameSlug,
   updateProfile,
   updateCreatorSplits,
   isSlugAvailable,
   type PublicCreator,
 } from "./creator.service.js";
 import { creatorEmail, httpsUrl } from "../../utils/validation.js";
+
+const RenameSlugBody = z.object({
+  slug: z.string().min(3).max(32),
+});
 
 const ClaimBody = z.object({
   slug: z.string().min(3).max(32),
@@ -107,6 +113,25 @@ export const creatorRoutes: FastifyPluginAsync = async (app) => {
 
       const { user } = request;
       const creator = await updateCreatorSplits(user.sub, body.data.splits);
+      return reply.send({ creator });
+    },
+  );
+
+  // ── PATCH /me/slug — auth required ─────────────────────────────────────────
+  app.patch(
+    "/me/slug",
+    { onRequest: [app.authenticate] },
+    async (request, reply) => {
+      const body = RenameSlugBody.safeParse(request.body);
+      if (!body.success) {
+        return reply.status(400).send({ error: body.error.flatten() });
+      }
+
+      const { user } = request;
+      const creator = await renameSlug({
+        creatorId: user.sub,
+        slug: body.data.slug,
+      });
       return reply.send({ creator });
     },
   );
