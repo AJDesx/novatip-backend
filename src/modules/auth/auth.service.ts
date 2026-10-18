@@ -131,10 +131,30 @@ export async function verifyChallenge(
       } catch (err) {
         if (
           err instanceof Prisma.PrismaClientKnownRequestError &&
-          err.code === "P2002" &&
-          attempt < MAX_CREATOR_CREATE_ATTEMPTS - 1
+          err.code === "P2002"
         ) {
-          continue;
+          // If a concurrent request won the race to create the creator for this walletAddress,
+          // retrieve the existing record so the duplicate request succeeds cleanly rather than
+          // throwing a 500 on what is an ordinary double-click (#87).
+          const target = (err.meta as { target?: unknown })?.target;
+          const isWalletConflict =
+            (Array.isArray(target) && target.includes("walletAddress")) ||
+            target === "walletAddress";
+
+          if (isWalletConflict) {
+            const existing = await db.creator.findUnique({
+              where: { walletAddress },
+            });
+            if (existing) {
+              created = existing;
+              break;
+            }
+          }
+
+          // Otherwise the collision was on temporary slug/jarId — retry with a new suffix.
+          if (attempt < MAX_CREATOR_CREATE_ATTEMPTS - 1) {
+            continue;
+          }
         }
         throw err;
       }

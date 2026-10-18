@@ -111,6 +111,14 @@ export const config = {
             "CBIELTK6YBZJU5UP2WWQEUCYKLPU6AUNZ2BQ4WWFEIE3USCIHMXQDAMA",
           ),
     indexerStartLedger: optionalInt("INDEXER_START_LEDGER", 0, 0),
+    /**
+     * How long (in ms) to wait for Soroban RPC requests (e.g. getLatestLedger)
+     * before timing out. Defaults to 5,000 ms (5s), which gives a healthy provider
+     * sufficient time to return the current ledger sequence without delaying indexer
+     * idle checks, while being configurable for slower or distant RPC endpoints to avoid
+     * false-positive warnings.
+     */
+    rpcTimeoutMs: optionalInt("INDEXER_RPC_TIMEOUT_MS", 5_000, 1),
   },
 
   webhooks: {

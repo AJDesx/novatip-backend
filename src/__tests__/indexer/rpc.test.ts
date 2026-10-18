@@ -96,4 +96,17 @@ describe("fetchLatestLedger", () => {
 
     await expect(fetchLatestLedger(RPC_URL)).rejects.toThrow("ECONNREFUSED");
   });
+
+  it("respects a custom timeout parameter", async () => {
+    mockFetch.mockResolvedValue(
+      jsonResponse({
+        jsonrpc: "2.0",
+        id: 1,
+        result: { sequence: 9_999 },
+      }),
+    );
+
+    const seq = await fetchLatestLedger(RPC_URL, 10_000);
+    expect(seq).toBe(9_999);
+  });
 });
