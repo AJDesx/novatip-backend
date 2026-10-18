@@ -9,6 +9,9 @@
 
 import { db } from "../../db.js";
 import { redis } from "../../redis.js";
+import { logger } from "../../utils/logger.js";
+
+const healthLogger = logger.child({ component: "health" });
 
 export interface DependencyStatus {
   status: "up" | "down";
@@ -28,16 +31,20 @@ export interface ReadinessReport {
  * Run a probe and record whether it succeeded and how long it took.
  * Never throws — a failed dependency is reported as `down`, not an error.
  */
-async function timed(probe: () => Promise<void>): Promise<DependencyStatus> {
+async function timed(
+  dependency: string,
+  probe: () => Promise<void>,
+): Promise<DependencyStatus> {
   const start = Date.now();
   try {
     await probe();
     return { status: "up", latencyMs: Date.now() - start };
   } catch (err) {
+    healthLogger.error({ err, dependency }, "readiness probe failed");
     return {
       status: "down",
       latencyMs: Date.now() - start,
-      error: err instanceof Error ? err.message : String(err),
+      error: "Dependency probe failed.",
     };
   }
 }
@@ -46,7 +53,7 @@ async function timed(probe: () => Promise<void>): Promise<DependencyStatus> {
  * Probe PostgreSQL with a trivial round-trip query.
  */
 export async function checkDatabase(): Promise<DependencyStatus> {
-  return timed(async () => {
+  return timed("database", async () => {
     await db.$queryRaw`SELECT 1`;
   });
 }
@@ -55,7 +62,7 @@ export async function checkDatabase(): Promise<DependencyStatus> {
  * Probe Redis with a PING.
  */
 export async function checkRedis(): Promise<DependencyStatus> {
-  return timed(async () => {
+  return timed("redis", async () => {
     const pong = await redis.ping();
     if (pong !== "PONG") throw new Error(`unexpected ping reply: ${pong}`);
   });
