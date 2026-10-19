@@ -192,7 +192,7 @@ misattribute those records. This deletion cannot remove the creator's on-chain
 jar registration.
 
 GET /qr/:slug - QR code SVG
-GET /qr/:slug/png - QR code PNG download
+GET /qr/:slug/png - QR code PNG download; optional `?width=` in pixels (64–2048, default 512)
 GET /resolve/:slug - Full tip-page data
 
 Tip URLs: the canonical tip page URL is APP_BASE_URL/:slug (no "@" prefix —

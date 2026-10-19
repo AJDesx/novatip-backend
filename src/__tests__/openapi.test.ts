@@ -69,4 +69,28 @@ describe("OpenAPI route", () => {
       openApiSpecification.paths["/public/{slug}/recent"]?.get?.security,
     ).toBeUndefined();
   });
+
+  it("documents the PNG QR width bounds and default", () => {
+    const widthParameter = openApiSpecification.paths[
+      "/qr/{slug}/png"
+    ]?.get?.parameters?.find(
+      (parameter) => "name" in parameter && parameter.name === "width",
+    );
+
+    expect(widthParameter).toMatchObject({
+      name: "width",
+      in: "query",
+      schema: {
+        type: "integer",
+        minimum: 64,
+        maximum: 2048,
+        default: 512,
+      },
+    });
+    expect(
+      Object.keys(
+        openApiSpecification.paths["/qr/{slug}/png"]?.get?.responses ?? {},
+      ),
+    ).toContain("400");
+  });
 });

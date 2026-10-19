@@ -9,8 +9,22 @@
 
 import type { FastifyPluginAsync, FastifyRequest, FastifyReply } from "fastify";
 import QRCode from "qrcode";
+import { z } from "zod";
 import { config } from "../../config.js";
 import { getCreatorBySlug } from "../creator/creator.service.js";
+
+export const PNG_QR_WIDTH_DEFAULT = 512;
+export const PNG_QR_WIDTH_MIN = 64;
+export const PNG_QR_WIDTH_MAX = 2048;
+
+const PngQuery = z.object({
+  width: z.coerce
+    .number()
+    .int()
+    .min(PNG_QR_WIDTH_MIN)
+    .max(PNG_QR_WIDTH_MAX)
+    .default(PNG_QR_WIDTH_DEFAULT),
+});
 
 /**
  * QR generation is CPU-heavy (512 px PNG rasterisation) and the routes are
@@ -93,6 +107,10 @@ export const qrRoutes: FastifyPluginAsync = async (app) => {
   // ── GET /:slug/png — PNG ───────────────────────────────────────────────────
   app.get("/:slug/png", async (request, reply) => {
     const { slug } = request.params as { slug: string };
+    const query = PngQuery.safeParse(request.query);
+    if (!query.success) {
+      return reply.status(400).send({ error: query.error.flatten() });
+    }
 
     await getCreatorBySlug(slug);
 
@@ -101,7 +119,7 @@ export const qrRoutes: FastifyPluginAsync = async (app) => {
     const pngBuffer = await QRCode.toBuffer(tipUrl, {
       type: "png",
       margin: 2,
-      width: 512,
+      width: query.data.width,
       color: { dark: "#000000", light: "#ffffff" },
     });
 

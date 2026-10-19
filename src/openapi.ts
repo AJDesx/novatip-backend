@@ -306,8 +306,24 @@ export const openApiSpecification = {
             "image/png": { schema: { type: "string", format: "binary" } },
           },
         },
-        parameters: [slugParameter],
-        extraResponses: { "404": notFound, "429": rateLimited },
+        parameters: [
+          slugParameter,
+          queryParameter(
+            "width",
+            "PNG image width in pixels (64–2048, default 512).",
+            {
+              type: "integer",
+              minimum: 64,
+              maximum: 2048,
+              default: 512,
+            },
+          ),
+        ],
+        extraResponses: {
+          "400": validationError,
+          "404": notFound,
+          "429": rateLimited,
+        },
       }),
     },
     "/analytics/totals": {
