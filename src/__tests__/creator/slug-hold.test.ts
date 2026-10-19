@@ -1,20 +1,25 @@
 /**
  * __tests__/creator/slug-hold.test.ts
  *
- * The hold window on a released slug. Once a creator renames (or re-claims),
- * their old slug used to be free instantly — stale links, printed posters and
- * QR codes kept pointing at it, and whoever claimed next collected that
- * traffic and showed their own wallet to people who meant to tip the original
- * creator. A released slug is now recorded with a timestamp and stays held for
- * CREATOR_SLUG_HOLD_DAYS (default 90) for its previous owner alone.
+ * The hold window on a released slug. Once a creator renames (or a
+ * first-time claimant claims), their old slug used to be free instantly —
+ * stale links, printed posters and QR codes kept pointing at it, and
+ * whoever claimed next collected that traffic and showed their own wallet
+ * to people who meant to tip the original creator. A released slug is now
+ * recorded with a timestamp and stays held for CREATOR_SLUG_HOLD_DAYS
+ * (default 90) for its previous owner alone.
  *
  * Covers, per the acceptance criteria:
  * - A held slug: unavailable to anonymous callers and other creators, from
  *   the availability check and from claim/rename alike (409 SLUG_TAKEN)
- * - An expired hold: the slug is free for anyone again, and a stranger's
- *   claim/rename succeeds — releasing their own former slug in the process
- * - The previous owner reclaiming it: available to them, claimable and
- *   renameable by them while the hold is still running
+ * - An expired hold: the slug is free for anyone again — a stranger still on
+ *   the sign-in placeholder claims it (releasing their placeholder in the
+ *   process), a stranger holding a real slug is refused the claim by the
+ *   one-claim rule and renames instead
+ * - The previous owner during the hold: available to them, renameable back
+ *   to them while the hold is still running; their claim is refused too
+ *   (409 ALREADY_CLAIMED) because claiming is the one-time placeholder→real
+ *   transition, not how an existing slug switches
  * Plus the recording side (rename writes the release with a timestamp, a
  * later release restarts the window), the configured default, and the
  * public availability endpoint honouring the owner exemption via JWT.
@@ -240,20 +245,45 @@ describe("a hold that has expired", () => {
     await expect(isSlugAvailable("oldslug", ALICE)).resolves.toBe(true);
   });
 
-  test("another creator can claim it, releasing their own former slug", async () => {
+  test("a creator on the sign-in placeholder can claim it", async () => {
+    // A first-time claimant is the only kind claimSlug still lets through,
+    // and their claim releases the placeholder they arrived with.
+    const NEWCOMER = "creator_newcomer";
+    creators.set(NEWCOMER, {
+      id: NEWCOMER,
+      slug: "user_1234abcd",
+      jarId: "@user_1234abcd",
+      displayName: null,
+      bio: null,
+      splits: [],
+    });
+
     await expect(
-      claimSlug({ creatorId: BOB, slug: "oldslug" }),
+      claimSlug({ creatorId: NEWCOMER, slug: "oldslug" }),
     ).resolves.toMatchObject({ slug: "oldslug", jarId: "@oldslug" });
 
-    expect(creators.get(BOB)?.slug).toBe("oldslug");
+    expect(creators.get(NEWCOMER)?.slug).toBe("oldslug");
 
-    // The slug BOB just gave up gets its own fresh release record, so the
-    // hold follows the switch, not just the original rename.
-    const bobOldSlug = releases.get("bob");
-    expect(bobOldSlug).toMatchObject({ slug: "bob", previousOwnerId: BOB });
-    expect(bobOldSlug?.releasedAt.getTime()).toBeGreaterThan(
+    // The placeholder left behind gets its own fresh release record, so the
+    // hold machinery treats it exactly like a slug a creator walked away from.
+    const newcomerOldSlug = releases.get("user_1234abcd");
+    expect(newcomerOldSlug).toMatchObject({
+      slug: "user_1234abcd",
+      previousOwnerId: NEWCOMER,
+    });
+    expect(newcomerOldSlug?.releasedAt.getTime()).toBeGreaterThan(
       Date.now() - 60_000,
     );
+  });
+
+  test("a creator with a real slug is refused — renaming is the path", async () => {
+    await expect(
+      claimSlug({ creatorId: BOB, slug: "oldslug" }),
+    ).rejects.toMatchObject({ statusCode: 409, code: "ALREADY_CLAIMED" });
+
+    expect(creators.get(BOB)?.slug).toBe("bob");
+    expect(creatorUpdateMock).not.toHaveBeenCalled();
+    expect(releases.get("bob")).toBeUndefined();
   });
 
   test("another creator can rename to it", async () => {
@@ -282,17 +312,17 @@ describe("the previous owner during the hold", () => {
     await expect(isSlugAvailable("oldslug")).resolves.toBe(false);
   });
 
-  test("can claim it back", async () => {
+  test("cannot claim it back — the hold exempts them, the one-claim rule does not", async () => {
+    // The hold still exempts ALICE (asserted via isSlugAvailable and the
+    // rename test below); what bars her here is that claiming is the
+    // one-time placeholder→real transition, and she holds a real slug.
     await expect(
       claimSlug({ creatorId: ALICE, slug: "oldslug" }),
-    ).resolves.toMatchObject({ slug: "oldslug", jarId: "@oldslug" });
+    ).rejects.toMatchObject({ statusCode: 409, code: "ALREADY_CLAIMED" });
 
-    expect(creators.get(ALICE)?.slug).toBe("oldslug");
-    // Her abandoned "alice" is released with a fresh timestamp on the way out.
-    expect(releases.get("alice")).toMatchObject({
-      slug: "alice",
-      previousOwnerId: ALICE,
-    });
+    expect(creators.get(ALICE)?.slug).toBe("alice");
+    expect(creatorUpdateMock).not.toHaveBeenCalled();
+    expect(releases.get("alice")).toBeUndefined();
   });
 
   test("can rename back to it", async () => {

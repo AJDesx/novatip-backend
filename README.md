@@ -137,7 +137,7 @@ NETWORK_PASSPHRASE - Stellar network passphrase (default: "Test SDF Network ; Se
 USDC_CONTRACT_ID (required on mainnet) - USDC Stellar Asset Contract ID (default on testnet/local: CBIELTK6YBZJU5UP2WWQEUCYKLPU6AUNZ2BQ4WWFEIE3USCIHMXQDAMA, the testnet one)
 INDEXER_START_LEDGER - Ledger to begin indexing from (default: 0)
 INDEXER_RPC_TIMEOUT_MS - Timeout for indexer RPC calls in milliseconds (default: 5000)
-CREATOR_SLUG_HOLD_DAYS - Days a slug released by renaming or re-claiming stays reserved for its previous owner before anyone else may claim it (default: 90, 0 disables the hold)
+CREATOR_SLUG_HOLD_DAYS - Days a slug released by renaming (or by a claim that leaves the sign-in placeholder behind) stays reserved for its previous owner before anyone else may claim it (default: 90, 0 disables the hold)
 MAX_WEBHOOKS_PER_CREATOR - Most webhooks one creator may register (default: 5, 0 removes the cap)
 WEBHOOK_DELIVERY_RETENTION_DAYS - Prune successful deliveries older than this (default: 30, 0 disables)
 WEBHOOK_DELIVERY_FAILURE_RETENTION_DAYS - Prune failed deliveries older than this (default: 90, 0 disables)
@@ -186,6 +186,13 @@ including when two requests race for the same one — the database's unique
 constraint is the real guard, not just the pre-check. The response body's
 error.code is "SLUG_TAKEN" or "JARID_TAKEN" so callers can tell which
 field conflicted.
+
+It also returns 409 with error.code "ALREADY_CLAIMED" when the caller
+already holds a real slug: a claim is the one-time move off the sign-in
+placeholder (user_ plus 8 hex), and a second one would point the slug and
+jarId at values the contract has never seen — orphaning the jar registered
+on-chain under the old id — while resetting splits to empty. Renaming
+(PATCH /creators/me/slug) is how an existing creator switches slugs.
 
 PATCH /creators/me accepts an optional email address, used as the recipient
 for tip notifications. It is private: the public creator endpoint and

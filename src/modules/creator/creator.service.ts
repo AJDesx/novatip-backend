@@ -20,6 +20,17 @@ import { resolveJarId } from "./jar-id.js";
 export { jarIdForSlug, resolveJarId } from "./jar-id.js";
 
 const SLUG_REGEX = /^[a-z0-9_-]{3,32}$/;
+
+/**
+ * The sign-in placeholder every new wallet starts on: auth.service mints
+ * `user_${randomBytes(4).toString("hex")}` — user_ plus 8 hex chars — and
+ * claiming is what turns it into a real slug. claimSlug uses this as the
+ * definition of "hasn't claimed yet" (see the one-claim guard there); the
+ * format is pinned to auth.service's generation on purpose, so a creator who
+ * somehow holds anything else — even a near-miss like user_1234abc — counts
+ * as having claimed and must go through renameSlug.
+ */
+const PLACEHOLDER_SLUG_REGEX = /^user_[0-9a-f]{8}$/;
 const PROFILE_CACHE_TTL = 60; // seconds
 const MILLIS_PER_DAY = 86_400_000;
 
@@ -179,7 +190,9 @@ async function recordSlugRelease(
 
 /**
  * Claim a slug for an authenticated creator.
- * Fails if the slug is already taken, invalid, or held for a previous owner.
+ * Fails if the slug is already taken, invalid, or held for a previous owner,
+ * or if this creator already holds a real slug (409 ALREADY_CLAIMED — the
+ * claim is the one-time transition off the sign-in placeholder).
  */
 export async function claimSlug(input: ClaimSlugInput) {
   if (!SLUG_REGEX.test(input.slug)) {
@@ -221,6 +234,26 @@ export async function claimSlug(input: ClaimSlugInput) {
   // Free of creators ≠ free: the slug may still be held for whoever last
   // released it (previous owner excepted).
   await assertSlugHoldFree(input.slug, input.creatorId);
+
+  // The claimant's own eligibility, checked last so the target-slug errors
+  // above keep precedence — a claim naming an occupied slug still reads
+  // SLUG_TAKEN rather than this. But with the target checks satisfied, a
+  // caller already on a real slug is refused: a claim is the one-time move
+  // off the sign-in placeholder (PLACEHOLDER_SLUG_REGEX), and a second one
+  // would point slug and jarId at values the contract has never seen — the
+  // jar registered on-chain under the old id is orphaned and tips to the new
+  // one fail JarNotFound — while also resetting splits to []. Switching
+  // slugs is renameSlug's job. A distinct code from SLUG_TAKEN: nothing is
+  // taken here, the caller has simply already claimed.
+  if (current && !PLACEHOLDER_SLUG_REGEX.test(current.slug)) {
+    throw Object.assign(
+      new Error(
+        "You have already claimed a slug — each creator claims once. " +
+          "To change it, rename via PATCH /creators/me/slug instead.",
+      ),
+      { statusCode: 409, code: "ALREADY_CLAIMED" },
+    );
+  }
 
   let creator;
   try {
