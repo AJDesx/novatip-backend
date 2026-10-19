@@ -209,6 +209,7 @@ GET /analytics/top-supporters- Ranked supporters ?limit=10 (JWT)
 GET /analytics/recent - Live tip feed ?limit=20&cursor=<opaque> (JWT)
 GET /analytics/export - CSV export of the creator's tip history (JWT)
 GET /analytics/collaborators - Per-recipient earnings breakdown (JWT)
+GET /notifications - Recent notifications ?limit=20&offset=0 (JWT)
 
 /analytics/recent is cursor-paginated. It takes ?limit= (1–100, default 20)
 and ?cursor=, and returns:
