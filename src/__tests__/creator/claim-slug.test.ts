@@ -2,7 +2,9 @@
  * __tests__/creator/claim-slug.test.ts
  *
  * Covers claimSlug's distinct failure paths: the slug format check, the
- * reserved-slug list, the availability pre-check (SLUG_TAKEN), and
+ * reserved-slug list, the availability pre-check (SLUG_TAKEN), the one-claim
+ * guard (ALREADY_CLAIMED — a creator already on a real slug is refused, and
+ * the refused claim leaves slug, jarId and splits untouched), and
  * toClaimConflict, which turns a losing race's Prisma P2002 into the same
  * 409 shape rather than letting it fall through to the global handler's
  * 500. That mapping was added to fix a real bug — a lost race surfacing as a
@@ -34,15 +36,19 @@ interface FakeCreatorRow {
   splits: unknown;
 }
 
-const findUniqueMock = jest.fn<
-  (args: { where: { slug: string } }) => Promise<FakeCreatorRow | null>
->();
-const updateMock = jest.fn<
-  (args: {
-    where: { id: string };
-    data: Record<string, unknown>;
-  }) => Promise<FakeCreatorRow>
->();
+const findUniqueMock =
+  jest.fn<
+    (args: {
+      where: { id?: string | undefined; slug?: string | undefined };
+    }) => Promise<FakeCreatorRow | null>
+  >();
+const updateMock =
+  jest.fn<
+    (args: {
+      where: { id: string };
+      data: Record<string, unknown>;
+    }) => Promise<FakeCreatorRow>
+  >();
 const cacheInvalidateMock = jest.fn<(key: string) => Promise<void>>();
 // Holds are never active in this file — claimSlug's hold pre-check still
 // queries the table, so the model exists here returning no row.
@@ -112,9 +118,9 @@ describe("an invalid slug", () => {
     ["a disallowed character", "al.ice"],
     ["a space", "al ice"],
   ])("rejects %s with a 400, not a 500", async (_label, slug) => {
-    await expect(
-      claimSlug({ creatorId: CREATOR, slug }),
-    ).rejects.toMatchObject({ statusCode: 400 });
+    await expect(claimSlug({ creatorId: CREATOR, slug })).rejects.toMatchObject(
+      { statusCode: 400 },
+    );
 
     // Rejected before any query is even attempted.
     expect(findUniqueMock).not.toHaveBeenCalled();
@@ -152,19 +158,108 @@ describe("a slug already taken by another creator", () => {
 });
 
 describe("re-claiming your own slug", () => {
-  test("is not treated as a conflict", async () => {
-    // The pre-check only rejects when the existing row belongs to someone
-    // else — the same creator claiming the slug they already hold (e.g.
-    // resubmitting a profile form) must go through.
+  test("is refused with ALREADY_CLAIMED — the claim is one-time", async () => {
+    // Same creator, same slug, nobody else's row in the way — and still
+    // refused. The pre-check's "own row is not a conflict" nuance only ever
+    // mattered for second claims, and the one-claim rule bars those outright:
+    // there is nothing left to conflict with, only a placeholder that has
+    // already become real.
     findUniqueMock.mockResolvedValue(row({ id: CREATOR, slug: "alice" }));
-    updateMock.mockResolvedValue(row({ id: CREATOR, slug: "alice" }));
 
     await expect(
       claimSlug({ creatorId: CREATOR, slug: "alice" }),
-    ).resolves.toMatchObject({ slug: "alice" });
+    ).rejects.toMatchObject({ statusCode: 409, code: "ALREADY_CLAIMED" });
+
+    expect(updateMock).not.toHaveBeenCalled();
+    expect(cacheInvalidateMock).not.toHaveBeenCalled();
+  });
+});
+
+// ── The one-claim rule ─────────────────────────────────────────────────────────
+
+describe("a creator who already holds a real slug", () => {
+  test("a second claim is refused with 409 ALREADY_CLAIMED and writes nothing", async () => {
+    // Stateful store: the assertion this whole fix exists for is that a
+    // refused claim leaves slug, jarId and splits exactly as they were —
+    // a write here would orphan the on-chain jar and reset the splits.
+    const stored: FakeCreatorRow = row({
+      slug: "alice",
+      jarId: "@alice",
+      splits: [{ to: `G${"B".repeat(55)}`, bps: 2_500 }],
+    });
+    findUniqueMock.mockImplementation(async (args) => {
+      if (args.where.id !== undefined) return stored;
+      return args.where.slug === stored.slug ? stored : null;
+    });
+
+    const err: unknown = await claimSlug({
+      creatorId: CREATOR,
+      slug: "brandnew",
+      splits: [],
+    }).catch((e: unknown) => e);
+
+    // A distinct code: not SLUG_TAKEN, because the target slug is free —
+    // what conflicted is that this caller has already claimed.
+    expect(err).toMatchObject({ statusCode: 409, code: "ALREADY_CLAIMED" });
+    expect(err).not.toMatchObject({ code: "SLUG_TAKEN" });
+
+    expect(updateMock).not.toHaveBeenCalled();
+    expect(releasedUpsertMock).not.toHaveBeenCalled();
+    expect(cacheInvalidateMock).not.toHaveBeenCalled();
+    expect(stored).toEqual(
+      row({
+        slug: "alice",
+        jarId: "@alice",
+        splits: [{ to: `G${"B".repeat(55)}`, bps: 2_500 }],
+      }),
+    );
+  });
+
+  test("a creator on the sign-in placeholder can still claim", async () => {
+    findUniqueMock.mockImplementation(async (args) => {
+      if (args.where.id !== undefined) {
+        return row({
+          id: CREATOR,
+          slug: "user_1234abcd",
+          jarId: "@user_1234abcd",
+        });
+      }
+      return null; // the target slug is free
+    });
+    updateMock.mockResolvedValue(row({ slug: "newslug", jarId: "@newslug" }));
+
+    await expect(
+      claimSlug({ creatorId: CREATOR, slug: "newslug" }),
+    ).resolves.toMatchObject({ slug: "newslug", jarId: "@newslug" });
 
     expect(updateMock).toHaveBeenCalledTimes(1);
   });
+
+  test.each([
+    ["seven hex chars", "user_1234abc"],
+    ["nine hex chars", "user_1234abcde"],
+    ["a non-hex suffix", "user_1234abz"],
+  ])(
+    "a current slug that is not the placeholder (%s) is refused",
+    async (_label, currentSlug) => {
+      findUniqueMock.mockImplementation(async (args) => {
+        if (args.where.id !== undefined) {
+          return row({
+            id: CREATOR,
+            slug: currentSlug,
+            jarId: `@${currentSlug}`,
+          });
+        }
+        return null;
+      });
+
+      await expect(
+        claimSlug({ creatorId: CREATOR, slug: "brandnew" }),
+      ).rejects.toMatchObject({ statusCode: 409, code: "ALREADY_CLAIMED" });
+
+      expect(updateMock).not.toHaveBeenCalled();
+    },
+  );
 });
 
 describe("claiming a free slug", () => {
@@ -230,8 +325,8 @@ describe("a losing race against another claim", () => {
 
     // No statusCode was ever attached — this is exactly what should reach
     // the global handler and surface as a 500, unlike a real conflict.
-    await expect(
-      claimSlug({ creatorId: CREATOR, slug: "alice" }),
-    ).rejects.toBe(dbDown);
+    await expect(claimSlug({ creatorId: CREATOR, slug: "alice" })).rejects.toBe(
+      dbDown,
+    );
   });
 });
