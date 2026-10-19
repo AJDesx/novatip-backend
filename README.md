@@ -151,22 +151,12 @@ QR_RATE_LIMIT - Per-IP cap on the QR endpoints, req/min (default: 10)
 APP_BASE_URL - Frontend base URL (default: http://localhost:3000)
 CORS_ALLOWED_ORIGINS - Comma-separated origins allowed through CORS in production (default: just APP_BASE_URL; ignored outside production, where any origin is allowed)
 
-## API Overview (base: /api/v1)
+## API reference
 
-GET /health - Simple liveness ping
-GET /health/live - Liveness (process up, no dependency checks)
-GET /health/ready - Readiness (PostgreSQL + Redis reachable; 503 if not)
-GET /health/indexer - Persisted indexer cursor, chain head, and ledger gap
-
-POST /auth/challenge - Issue one-time sign-in nonce
-POST /auth/verify - Verify signature, return JWT
-GET /auth/me - Current user (JWT)
-
-GET /creators/:slug - Public creator profile
-GET /creators/check/:slug - Slug availability
-POST /creators/claim - Claim a slug (JWT)
-PATCH /creators/me - Update profile (JWT)
-PATCH /creators/me/splits - Update splits (JWT)
+The complete machine-readable OpenAPI 3.0 specification is served at
+[`/api/v1/openapi.json`](http://localhost:3001/api/v1/openapi.json) in local
+development. It describes every route, authentication requirement, parameter,
+request body, and response shape.
 
 Reserved slugs (api, admin, dashboard, onboarding, settings, login, logout,
 auth, support, help, about, terms, privacy, static, _next, novatip — see
