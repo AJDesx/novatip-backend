@@ -207,6 +207,19 @@ export const config = {
     from: optional("EMAIL_FROM", "tips@novatip.xyz"),
   },
 
+  creators: {
+    /**
+     * Days a slug released by its previous owner stays reserved for them
+     * before anyone else may claim it. The rename screen only warns that the
+     * old link stops working — it does not say someone else can take the
+     * slug over — so a released slug remains held long enough for stale
+     * links, printed posters and QR codes to be noticed and rotated. The
+     * previous owner is exempt from their own hold throughout. 0 disables
+     * the hold, freeing a slug the moment it is released.
+     */
+    slugHoldDays: optionalInt("CREATOR_SLUG_HOLD_DAYS", 90, 0),
+  },
+
   rateLimits: {
     /**
      * The server-wide budget every route not covered by a dedicated limiter

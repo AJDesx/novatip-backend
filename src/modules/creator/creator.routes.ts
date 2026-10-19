@@ -62,7 +62,20 @@ export const creatorRoutes: FastifyPluginAsync = async (app) => {
   // ── GET /check/:slug — availability ───────────────────────────────────────
   app.get("/check/:slug", async (request, reply) => {
     const { slug } = request.params as { slug: string };
-    const available = await isSlugAvailable(slug);
+
+    // The endpoint stays public, but identity matters here: a released slug
+    // is held for its previous owner, and only a token proves the caller is
+    // that owner. No token, or an invalid one, simply reads as anonymous —
+    // claim and rename still enforce the hold server-side either way.
+    let viewerId: string | undefined;
+    try {
+      await request.jwtVerify();
+      viewerId = request.user.sub;
+    } catch {
+      // Unauthenticated callers get the hold applied to everyone.
+    }
+
+    const available = await isSlugAvailable(slug, viewerId);
     return reply.send({ slug, available });
   });
 

@@ -91,7 +91,7 @@ export async function buildServer(): Promise<FastifyInstance> {
         await import("./modules/analytics/analytics.routes.js");
       const { webhookRoutes } =
         await import("./modules/webhooks/webhooks.routes.js");
-      const { notificationsRoutes } =
+      const { notificationRoutes } =
         await import("./modules/notifications/notifications.routes.js");
       const { publicRoutes } =
         await import("./modules/public/public.routes.js");
@@ -103,7 +103,7 @@ export async function buildServer(): Promise<FastifyInstance> {
       await app.register(resolverRoutes, { prefix: "/resolve" });
       await app.register(analyticsRoutes, { prefix: "/analytics" });
       await app.register(webhookRoutes, { prefix: "/webhooks" });
-      await app.register(notificationsRoutes, { prefix: "/notifications" });
+      await app.register(notificationRoutes, { prefix: "/notifications" });
       await app.register(publicRoutes, { prefix: "/public" });
     },
     { prefix: "/api/v1" },
