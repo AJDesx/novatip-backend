@@ -32,6 +32,13 @@ model Creator {
   /// the select in getCreatorBySlug, which backs both the public creator
   /// endpoint and the resolver.
   email       String?
+  /// Whether tip-notification emails are switched on. Defaults to true so
+  /// the migration backfills existing creators as "on" — nothing turns off
+  /// until a creator turns it off.
+  emailEnabled Boolean @default(true)
+  /// Whether tip webhooks are dispatched for this creator. Same default,
+  /// same reasoning as emailEnabled.
+  webhookEnabled Boolean @default(true)
   /// On-chain jar ID registered in tip_splitter, e.g. "@alice"
   jarId       String   @unique
   /// JSON array of Split objects [{ to, bps }]
