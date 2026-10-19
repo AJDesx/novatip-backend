@@ -99,8 +99,8 @@ model Tip {
   amount      String
   /// Optional supporter message (bounded to the contract's 280-byte limit)
   message     String   @default("") @db.VarChar(280)
-  creatorId   String
-  creator     Creator  @relation(fields: [creatorId], references: [id])
+  creatorId   String?
+  creator     Creator? @relation(fields: [creatorId], references: [id], onDelete: SetNull)
   createdAt   DateTime @default(now())
 
   @@index([creatorId])

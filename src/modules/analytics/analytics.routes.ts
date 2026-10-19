@@ -12,8 +12,13 @@
  * GET /api/v1/analytics/collaborators    — per-recipient earnings breakdown
  */
 
-import type { FastifyPluginAsync } from "fastify";
+import type {
+  FastifyPluginAsync,
+  FastifyReply,
+  FastifyRequest,
+} from "fastify";
 import { z } from "zod";
+import { db } from "../../db.js";
 import {
   getTotals,
   getTimeSeries,
@@ -22,6 +27,7 @@ import {
   getCollaboratorEarnings,
   RECENT_TIPS_DEFAULT_LIMIT,
   RECENT_TIPS_MAX_LIMIT,
+  tipHistoryCsvStream,
 } from "./analytics.service.js";
 
 const DaysQuery = z.coerce.number().int().min(1).max(365).default(30);
@@ -97,6 +103,32 @@ export const analyticsRoutes: FastifyPluginAsync = async (app) => {
     );
     return reply.send(page);
   });
+
+  // ── GET /export.csv — CSV download ────────────────────────────────────────
+  const exportCsv: (request: FastifyRequest, reply: FastifyReply) => Promise<unknown> =
+    async (request, reply) => {
+      const { user } = request;
+      const creator = await db.creator.findUnique({
+        where: { id: user.sub },
+        select: { slug: true },
+      });
+
+      const slug = creator?.slug ?? "creator";
+      const filename = `${slug}-tip-history.csv`;
+
+      return reply
+        .header("Content-Type", "text/csv; charset=utf-8")
+        .header("Content-Disposition", `attachment; filename="${filename}"`)
+        .header("Cache-Control", "no-store")
+        .send(tipHistoryCsvStream(user.sub));
+    };
+
+  app.get("/export", exportCsv);
+  app.get("/csv", exportCsv);
+  app.get("/recent.csv", exportCsv);
+  app.get("/export.csv", exportCsv);
+  app.get("/tips.csv", exportCsv);
+  app.get("/history.csv", exportCsv);
 
   // ── GET /collaborators ─────────────────────────────────────────────────────
   app.get("/collaborators", async (request, reply) => {

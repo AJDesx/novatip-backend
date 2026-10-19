@@ -152,11 +152,16 @@ QR_RATE_LIMIT - Per-IP cap on the QR endpoints, req/min (default: 10)
 APP_BASE_URL - Frontend base URL (default: http://localhost:3000)
 CORS_ALLOWED_ORIGINS - Comma-separated origins allowed through CORS in production (default: just APP_BASE_URL; ignored outside production, where any origin is allowed)
 
-## API Overview (base: /api/v1)
+## API reference
 
+The complete machine-readable OpenAPI 3.0 specification is served at
+[`/api/v1/openapi.json`](http://localhost:3001/api/v1/openapi.json) in local
+development. It describes every route, authentication requirement, parameter,
+request body, and response shape.
 GET /health - Simple liveness ping
 GET /health/live - Liveness (process up, no dependency checks)
 GET /health/ready - Readiness (PostgreSQL + Redis reachable; 503 if not)
+GET /health/version - Public build metadata: package version, build commit, and configured network
 
 POST /auth/challenge - Issue one-time sign-in nonce
 POST /auth/verify - Verify signature, return JWT
@@ -200,8 +205,16 @@ for tip notifications. It is private: the public creator endpoint and
 world-readable columns and omits it. Send null to clear a stored address; omit
 the field to leave it unchanged.
 
+DELETE /creators/me permanently removes the authenticated creator's profile
+and frees their slug. It also deletes their notifications, webhooks, and
+webhook delivery history, which are account-owned operational data. Indexed
+tips are retained because they represent immutable on-chain financial history;
+their creator association is cleared so deleting the profile does not erase or
+misattribute those records. This deletion cannot remove the creator's on-chain
+jar registration.
+
 GET /qr/:slug - QR code SVG
-GET /qr/:slug/png - QR code PNG download
+GET /qr/:slug/png - QR code PNG download; optional `?width=` in pixels (64–2048, default 512)
 GET /resolve/:slug - Full tip-page data
 
 Tip URLs: the canonical tip page URL is APP_BASE_URL/:slug (no "@" prefix —
@@ -215,7 +228,9 @@ GET /analytics/totals - Total tips, amount, supporters (JWT)
 GET /analytics/timeseries - Daily breakdown ?days=30 (JWT)
 GET /analytics/top-supporters- Ranked supporters ?limit=10 (JWT)
 GET /analytics/recent - Live tip feed ?limit=20&cursor=<opaque> (JWT)
+GET /analytics/export - CSV export of the creator's tip history (JWT)
 GET /analytics/collaborators - Per-recipient earnings breakdown (JWT)
+GET /notifications - Recent notifications ?limit=20&offset=0 (JWT)
 
 /analytics/recent is cursor-paginated. It takes ?limit= (1–100, default 20)
 and ?cursor=, and returns:
@@ -474,6 +489,13 @@ channel is on, and email still needs an address on record
 
 Polls Soroban RPC every 6s for TipReceived events, persists to PostgreSQL,
 dispatches webhooks, sends email notifications. Resumes from IndexerCursor.
+
+### Progress status
+
+`GET /api/v1/health/indexer` reports `cursorLedger`, `chainHead`, and `gap`.
+The chain head includes `status: "known"` and its ledger when the RPC responds;
+if the RPC is unreachable it is returned as `status: "unknown"` and `gap` is
+`null`, while the persisted cursor is still reported.
 
 ### Cursor during quiet periods
 

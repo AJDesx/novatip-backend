@@ -371,6 +371,45 @@ export async function renameSlug(input: RenameSlugInput) {
 }
 
 /**
+ * Remove a creator profile and its private account-owned records while keeping
+ * indexed tips as unattributed financial history. The schema sets tip creator
+ * references to null when the creator is deleted; webhook delivery records and
+ * notifications are explicitly deleted before their parent records.
+ */
+export async function deleteCreator(creatorId: string): Promise<void> {
+  const slug = await db.$transaction(async (tx) => {
+    const creator = await tx.creator.findUnique({
+      where: { id: creatorId },
+      select: { slug: true },
+    });
+    if (!creator) {
+      throw Object.assign(new Error("Creator not found."), { statusCode: 404 });
+    }
+
+    await tx.notification.deleteMany({ where: { creatorId } });
+
+    const webhooks = await tx.webhook.findMany({
+      where: { creatorId },
+      select: { id: true },
+    });
+    const webhookIds = webhooks.map(({ id }) => id);
+
+    if (webhookIds.length > 0) {
+      await tx.webhookDelivery.deleteMany({
+        where: { webhookId: { in: webhookIds } },
+      });
+    }
+
+    await tx.webhook.deleteMany({ where: { creatorId } });
+    await tx.creator.delete({ where: { id: creatorId } });
+
+    return creator.slug;
+  });
+
+  await cacheInvalidate(`creator:${slug}`);
+}
+
+/**
  * A losing concurrent claim hits the DB's unique constraint (slug and jarId
  * are both @unique) as Prisma error P2002, not the pre-check above. That
  * reaches the global error handler with no statusCode and surfaces as a 500

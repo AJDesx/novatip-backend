@@ -1,15 +1,43 @@
 /**
  * health.routes.ts
  *
- * Liveness and readiness endpoints for container orchestrators and load
- * balancers. These are public — no JWT required.
+ * Liveness, readiness and build metadata endpoints for operators and deploy
+ * automation. These are public — no JWT required.
  *
- * GET /api/v1/health/live   — process is up (never touches dependencies)
- * GET /api/v1/health/ready  — dependencies (PostgreSQL, Redis) are reachable
+ * GET /api/v1/health/live    — process is up (never touches dependencies)
+ * GET /api/v1/health/ready   — dependencies (PostgreSQL, Redis) are reachable
+ * GET /api/v1/health/version — package version, build commit, configured network
  */
 
+import { readFileSync } from "node:fs";
 import type { FastifyPluginAsync } from "fastify";
-import { getReadiness } from "./health.service.js";
+import { getIndexerStatus, getReadiness } from "./health.service.js";
+import { config } from "../../config.js";
+
+
+function getPackageVersion(): string {
+  try {
+    const pkg = JSON.parse(
+      readFileSync(new URL("../../../package.json", import.meta.url), "utf8"),
+    ) as { version?: string };
+
+    return typeof pkg.version === "string" && pkg.version.trim() !== ""
+      ? pkg.version
+      : "unknown";
+  } catch {
+    return "unknown";
+  }
+}
+
+function getBuildCommit(): string {
+  const commit =
+    process.env.BUILD_COMMIT ??
+    process.env.GIT_COMMIT ??
+    process.env.npm_package_git_commit ??
+    "";
+
+  return commit.trim() !== "" ? commit.trim() : "unknown";
+}
 
 export const healthRoutes: FastifyPluginAsync = async (app) => {
   // ── GET /live ──────────────────────────────────────────────────────────────
@@ -30,4 +58,19 @@ export const healthRoutes: FastifyPluginAsync = async (app) => {
       .status(statusCode)
       .send({ ...report, ts: new Date().toISOString() });
   });
+
+  // ── GET /indexer ──────────────────────────────────────────────────────────
+  // Separate from readiness: indexer progress remains observable when the
+  // chain RPC is unavailable.
+  app.get("/indexer", async () => ({
+    ...(await getIndexerStatus()),
+    ts: new Date().toISOString(),
+  // ── GET /version ─────────────────────────────────────────────────────────────
+  // Public build metadata for deploy verification: clients can confirm the
+  // package version and git commit being served without exposing any secrets.
+  app.get("/version", async () => ({
+    version: getPackageVersion(),
+    commit: getBuildCommit(),
+    network: config.stellar.network,
+  }));
 };
