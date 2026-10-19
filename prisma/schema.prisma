@@ -42,6 +42,7 @@ model Creator {
   tips        Tip[]
   webhooks    Webhook[]
   notifications Notification[]
+  releasedSlugs ReleasedSlug[]
 
   // No @@index([walletAddress]) or @@index([slug]) here: @unique above
   // already backs each with a unique btree index, so a plain index on the
@@ -49,6 +50,30 @@ model Creator {
   // sign-in and slug claim for a lookup Postgres already serves off the
   // unique index. See WebhookDelivery's @@index comment for the same
   // reasoning applied there.
+}
+
+// ── ReleasedSlug ───────────────────────────────────────────────────────────────
+// A slug a creator let go of (by renaming away from it, or by claiming a
+// different one) and when. Until the hold window configured by
+// CREATOR_SLUG_HOLD_DAYS (default 90 days) expires, the slug stays
+// unavailable to everyone except this creator — so the old tip links,
+// printed posters and QR codes that still pointing at it can't be handed to
+// whoever claims it next, along with the people behind them who meant to
+// tip the original creator.
+
+model ReleasedSlug {
+  /// The released slug, e.g. "alice" — one row per slug, the latest release
+  slug            String   @id
+  /// The creator who released it: the only one who may take it while held
+  previousOwnerId String
+  previousOwner   Creator  @relation(fields: [previousOwnerId], references: [id], onDelete: Cascade)
+  /// When it was released; the hold expires CREATOR_SLUG_HOLD_DAYS after this
+  releasedAt      DateTime @default(now())
+
+  /// Foreign key back to Creator has no leading column of its own to serve
+  /// lookups by (slug above is the primary key), but Postgres does not index
+  /// FK columns automatically, and any per-owner query would otherwise scan.
+  @@index([previousOwnerId])
 }
 
 // ── Tip ───────────────────────────────────────────────────────────────────────
