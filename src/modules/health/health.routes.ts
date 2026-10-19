@@ -6,10 +6,11 @@
  *
  * GET /api/v1/health/live   — process is up (never touches dependencies)
  * GET /api/v1/health/ready  — dependencies (PostgreSQL, Redis) are reachable
+ * GET /api/v1/health/indexer — persisted cursor and current chain head
  */
 
 import type { FastifyPluginAsync } from "fastify";
-import { getReadiness } from "./health.service.js";
+import { getIndexerStatus, getReadiness } from "./health.service.js";
 
 export const healthRoutes: FastifyPluginAsync = async (app) => {
   // ── GET /live ──────────────────────────────────────────────────────────────
@@ -30,4 +31,12 @@ export const healthRoutes: FastifyPluginAsync = async (app) => {
       .status(statusCode)
       .send({ ...report, ts: new Date().toISOString() });
   });
+
+  // ── GET /indexer ──────────────────────────────────────────────────────────
+  // Separate from readiness: indexer progress remains observable when the
+  // chain RPC is unavailable.
+  app.get("/indexer", async () => ({
+    ...(await getIndexerStatus()),
+    ts: new Date().toISOString(),
+  }));
 };

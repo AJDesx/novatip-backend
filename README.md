@@ -156,6 +156,7 @@ CORS_ALLOWED_ORIGINS - Comma-separated origins allowed through CORS in productio
 GET /health - Simple liveness ping
 GET /health/live - Liveness (process up, no dependency checks)
 GET /health/ready - Readiness (PostgreSQL + Redis reachable; 503 if not)
+GET /health/indexer - Persisted indexer cursor, chain head, and ledger gap
 
 POST /auth/challenge - Issue one-time sign-in nonce
 POST /auth/verify - Verify signature, return JWT
@@ -444,6 +445,13 @@ Signatures), which is what makes the ping a real test of the receiving side.
 
 Polls Soroban RPC every 6s for TipReceived events, persists to PostgreSQL,
 dispatches webhooks, sends email notifications. Resumes from IndexerCursor.
+
+### Progress status
+
+`GET /api/v1/health/indexer` reports `cursorLedger`, `chainHead`, and `gap`.
+The chain head includes `status: "known"` and its ledger when the RPC responds;
+if the RPC is unreachable it is returned as `status: "unknown"` and `gap` is
+`null`, while the persisted cursor is still reported.
 
 ### Cursor during quiet periods
 
