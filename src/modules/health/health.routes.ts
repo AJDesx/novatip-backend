@@ -11,8 +11,9 @@
 
 import { readFileSync } from "node:fs";
 import type { FastifyPluginAsync } from "fastify";
+import { getIndexerStatus, getReadiness } from "./health.service.js";
 import { config } from "../../config.js";
-import { getReadiness } from "./health.service.js";
+
 
 function getPackageVersion(): string {
   try {
@@ -58,6 +59,12 @@ export const healthRoutes: FastifyPluginAsync = async (app) => {
       .send({ ...report, ts: new Date().toISOString() });
   });
 
+  // ── GET /indexer ──────────────────────────────────────────────────────────
+  // Separate from readiness: indexer progress remains observable when the
+  // chain RPC is unavailable.
+  app.get("/indexer", async () => ({
+    ...(await getIndexerStatus()),
+    ts: new Date().toISOString(),
   // ── GET /version ─────────────────────────────────────────────────────────────
   // Public build metadata for deploy verification: clients can confirm the
   // package version and git commit being served without exposing any secrets.
