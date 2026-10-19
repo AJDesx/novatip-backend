@@ -463,9 +463,12 @@ leaves the other untouched, and a key that is present but not a boolean is a
 400 rather than a write Postgres would coerce. `{ "preferences": {} }` is a
 valid no-op.
 
-The flags record the creator's choice; dispatch keeps its existing gates
-alongside them — webhooks still need their own `enabled` row, and email still
-needs an address on record (PATCH /creators/me).
+The flags are consulted at dispatch: `sendTipNotification` skips quietly
+while a creator's `emailEnabled` is false, and `dispatchWebhooks` attempts
+nothing at all while `webhookEnabled` is false. The pre-existing gates stay
+underneath — a paused per-webhook `enabled` row still applies when the
+channel is on, and email still needs an address on record
+(PATCH /creators/me).
 
 ## Indexer
 

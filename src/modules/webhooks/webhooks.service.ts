@@ -94,6 +94,12 @@ export interface DeliveryOutcome {
 
 /**
  * Find all enabled webhooks for the jar's creator and deliver the event.
+ *
+ * Two gates, both of which must pass: the creator-level webhookEnabled
+ * switch — a creator who turned webhooks off in preferences gets nothing
+ * attempted at all — and the per-webhook `enabled` filter in the include
+ * below, which applies underneath that switch rather than instead of it.
+ *
  * Failures are logged but never thrown — the indexer must not crash on
  * a bad webhook endpoint. A failed delivery also raises a (rate-limited)
  * WEBHOOK_FAILED notification — see notifyWebhookFailure — so a receiver
@@ -106,7 +112,12 @@ export async function dispatchWebhooks(event: TipEvent): Promise<void> {
     include: { webhooks: { where: { enabled: true } } },
   });
 
-  if (!creator || creator.webhooks.length === 0) return;
+  // The creator-level switch is checked before anything else is considered:
+  // while webhookEnabled is false, even the enabled endpoints above stay
+  // undelivered.
+  if (!creator || !creator.webhookEnabled || creator.webhooks.length === 0) {
+    return;
+  }
 
   const payload: WebhookPayload = {
     event: "tip.received",
