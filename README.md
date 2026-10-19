@@ -156,6 +156,7 @@ CORS_ALLOWED_ORIGINS - Comma-separated origins allowed through CORS in productio
 GET /health - Simple liveness ping
 GET /health/live - Liveness (process up, no dependency checks)
 GET /health/ready - Readiness (PostgreSQL + Redis reachable; 503 if not)
+GET /health/version - Public build metadata: package version, build commit, and configured network
 
 POST /auth/challenge - Issue one-time sign-in nonce
 POST /auth/verify - Verify signature, return JWT
