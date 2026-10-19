@@ -441,6 +441,25 @@ reconstructed from it even by a receiver that tries.
 The signature is computed over this body exactly as for a tip (see Webhook
 Signatures), which is what makes the ping a real test of the receiving side.
 
+## Notifications
+
+Channel preferences live on the creator: `emailEnabled` and `webhookEnabled`,
+both booleans defaulting to true, so the migration that added them switched
+nothing off for existing creators.
+
+GET /notifications/preferences - Read both flags (JWT)
+PATCH /notifications/preferences - Switch either or both (JWT)
+
+Both answer `{ "preferences": { "emailEnabled": true, "webhookEnabled": true } }`.
+PATCH takes the same envelope with either key present, so updating one channel
+leaves the other untouched, and a key that is present but not a boolean is a
+400 rather than a write Postgres would coerce. `{ "preferences": {} }` is a
+valid no-op.
+
+The flags record the creator's choice; dispatch keeps its existing gates
+alongside them — webhooks still need their own `enabled` row, and email still
+needs an address on record (PATCH /creators/me).
+
 ## Indexer
 
 Polls Soroban RPC every 6s for TipReceived events, persists to PostgreSQL,
