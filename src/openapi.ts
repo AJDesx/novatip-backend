@@ -246,6 +246,15 @@ export const openApiSpecification = {
         secured: true,
         extraResponses: { "400": validationError, "404": notFound },
       }),
+      delete: operation({
+        summary: "Delete the authenticated creator account",
+        description:
+          "Permanently removes the profile, notifications, webhooks, and webhook delivery history. Indexed tips are retained as on-chain financial history but detached from the deleted creator.",
+        successStatus: 204,
+        success: { description: "Creator account deleted." },
+        secured: true,
+        extraResponses: { "404": notFound },
+      }),
     },
     "/creators/me/splits": {
       patch: operation({

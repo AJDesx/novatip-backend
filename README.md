@@ -183,6 +183,14 @@ for tip notifications. It is private: the public creator endpoint and
 world-readable columns and omits it. Send null to clear a stored address; omit
 the field to leave it unchanged.
 
+DELETE /creators/me permanently removes the authenticated creator's profile
+and frees their slug. It also deletes their notifications, webhooks, and
+webhook delivery history, which are account-owned operational data. Indexed
+tips are retained because they represent immutable on-chain financial history;
+their creator association is cleared so deleting the profile does not erase or
+misattribute those records. This deletion cannot remove the creator's on-chain
+jar registration.
+
 GET /qr/:slug - QR code SVG
 GET /qr/:slug/png - QR code PNG download
 GET /resolve/:slug - Full tip-page data

@@ -7,6 +7,7 @@
  * PATCH /api/v1/creators/me            — update profile (auth required)
  * PATCH /api/v1/creators/me/splits     — update on-chain splits record (auth required)
  * PATCH /api/v1/creators/me/slug       — rename slug (auth required)
+ * DELETE /api/v1/creators/me           — delete the authenticated creator profile (auth required)
  */
 
 import type { FastifyPluginAsync } from "fastify";
@@ -18,6 +19,7 @@ import {
   updateProfile,
   updateCreatorSplits,
   isSlugAvailable,
+  deleteCreator,
   type PublicCreator,
 } from "./creator.service.js";
 import { creatorEmail, httpsUrl } from "../../utils/validation.js";
@@ -133,6 +135,18 @@ export const creatorRoutes: FastifyPluginAsync = async (app) => {
         slug: body.data.slug,
       });
       return reply.send({ creator });
+    },
+  );
+
+  // ── DELETE /me — auth required ────────────────────────────────────────────
+  // Removes the profile, notifications, webhooks, and delivery history. Tips
+  // remain as financial history and are detached from the deleted profile.
+  app.delete(
+    "/me",
+    { onRequest: [app.authenticate] },
+    async (request, reply) => {
+      await deleteCreator(request.user.sub);
+      return reply.status(204).send();
     },
   );
 };

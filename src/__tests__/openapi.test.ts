@@ -56,6 +56,16 @@ describe("OpenAPI route", () => {
       openApiSpecification.paths["/analytics/totals"]?.get?.security,
     ).toEqual([{ bearerAuth: [] }]);
     expect(
+      openApiSpecification.paths["/creators/me"]?.delete?.security,
+    ).toEqual([{ bearerAuth: [] }]);
+    expect(
+      Object.entries(
+        openApiSpecification.paths["/creators/me"]?.delete?.responses ?? {},
+      ).find(([status]) => status === "204")?.[1],
+    ).toMatchObject({
+      description: "Creator account deleted.",
+    });
+    expect(
       openApiSpecification.paths["/public/{slug}/recent"]?.get?.security,
     ).toBeUndefined();
   });
