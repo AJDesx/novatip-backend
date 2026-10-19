@@ -207,6 +207,7 @@ GET /analytics/totals - Total tips, amount, supporters (JWT)
 GET /analytics/timeseries - Daily breakdown ?days=30 (JWT)
 GET /analytics/top-supporters- Ranked supporters ?limit=10 (JWT)
 GET /analytics/recent - Live tip feed ?limit=20&cursor=<opaque> (JWT)
+GET /analytics/export - CSV export of the creator's tip history (JWT)
 GET /analytics/collaborators - Per-recipient earnings breakdown (JWT)
 
 /analytics/recent is cursor-paginated. It takes ?limit= (1–100, default 20)
