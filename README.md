@@ -137,6 +137,7 @@ NETWORK_PASSPHRASE - Stellar network passphrase (default: "Test SDF Network ; Se
 USDC_CONTRACT_ID (required on mainnet) - USDC Stellar Asset Contract ID (default on testnet/local: CBIELTK6YBZJU5UP2WWQEUCYKLPU6AUNZ2BQ4WWFEIE3USCIHMXQDAMA, the testnet one)
 INDEXER_START_LEDGER - Ledger to begin indexing from (default: 0)
 INDEXER_RPC_TIMEOUT_MS - Timeout for indexer RPC calls in milliseconds (default: 5000)
+CREATOR_SLUG_HOLD_DAYS - Days a slug released by renaming or re-claiming stays reserved for its previous owner before anyone else may claim it (default: 90, 0 disables the hold)
 MAX_WEBHOOKS_PER_CREATOR - Most webhooks one creator may register (default: 5, 0 removes the cap)
 WEBHOOK_DELIVERY_RETENTION_DAYS - Prune successful deliveries older than this (default: 30, 0 disables)
 WEBHOOK_DELIVERY_FAILURE_RETENTION_DAYS - Prune failed deliveries older than this (default: 90, 0 disables)

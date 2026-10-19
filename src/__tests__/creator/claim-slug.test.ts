@@ -9,9 +9,10 @@
  * 500 — so it is the one most worth pinning here.
  *
  * db and redis are mocked so this runs without PostgreSQL or Redis. Only the
- * two db.creator calls claimSlug actually makes (findUnique for the
- * pre-check, update for the write) are modelled — getCreatorBySlug and
- * isSlugAvailable are out of scope for this file.
+ * calls claimSlug actually makes are modelled — creator.findUnique for the
+ * current-creator lookup and the availability pre-check, creator.update for
+ * the write, and releasedSlug for the hold pre-check (never active here).
+ * getCreatorBySlug and isSlugAvailable are out of scope for this file.
  *
  * config.ts validates required env vars at module load, so those are set
  * before the module graph is imported.
@@ -43,9 +44,20 @@ const updateMock = jest.fn<
   }) => Promise<FakeCreatorRow>
 >();
 const cacheInvalidateMock = jest.fn<(key: string) => Promise<void>>();
+// Holds are never active in this file — claimSlug's hold pre-check still
+// queries the table, so the model exists here returning no row.
+const releasedFindUniqueMock =
+  jest.fn<(args: { where: { slug: string } }) => Promise<null>>();
+const releasedUpsertMock = jest.fn<(args: unknown) => Promise<unknown>>();
 
 jest.unstable_mockModule("../../db.js", () => ({
-  db: { creator: { findUnique: findUniqueMock, update: updateMock } },
+  db: {
+    creator: { findUnique: findUniqueMock, update: updateMock },
+    releasedSlug: {
+      findUnique: releasedFindUniqueMock,
+      upsert: releasedUpsertMock,
+    },
+  },
   disconnectDb: async (): Promise<void> => undefined,
 }));
 
@@ -87,6 +99,8 @@ beforeEach(() => {
   findUniqueMock.mockReset();
   updateMock.mockReset();
   cacheInvalidateMock.mockReset();
+  releasedFindUniqueMock.mockReset().mockResolvedValue(null);
+  releasedUpsertMock.mockReset();
 });
 
 // ── Validation ────────────────────────────────────────────────────────────────
