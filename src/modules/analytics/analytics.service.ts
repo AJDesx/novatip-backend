@@ -8,6 +8,7 @@
  * every dashboard refresh.
  */
 
+import { Readable } from "node:stream";
 import { Prisma } from "@prisma/client";
 import { db } from "../../db.js";
 import { cacheGet, cacheSet } from "../../redis.js";
@@ -329,6 +330,95 @@ export function toRecentTipsPage(
     nextCursor:
       hasMore && last ? encodeTipCursor(last.ledgerAt, last.id) : null,
   };
+}
+
+// ── CSV export ───────────────────────────────────────────────────────────────
+
+/** CSV quoting follows RFC 4180: strings containing commas, quotes, or line breaks are wrapped in double quotes and inner quotes doubled. */
+function escapeCsvValue(value: string): string {
+  const needsQuotes = /[",\n\r]/.test(value);
+  if (!needsQuotes) {
+    return value;
+  }
+  return `"${value.replace(/"/g, '""')}"`;
+}
+
+/**
+ * Stream a creator's tip history as CSV, batching rows to keep memory bounded.
+ * The response body is the CSV data itself, not a JSON envelope.
+ */
+type TipHistoryCsvRow = {
+  id: string;
+  txHash: string;
+  fromAddress: string;
+  amount: string;
+  message: string;
+  ledgerAt: Date;
+};
+
+export async function* streamTipHistoryCsv(
+  creatorId: string,
+): AsyncGenerator<string> {
+  yield "id,txHash,fromAddress,amount,message,ledgerAt\n";
+
+  const rowsPerBatch = 500;
+  let after: { ledgerAt: Date; id: string } | null = null;
+
+  while (true) {
+    const rows: TipHistoryCsvRow[] = await db.tip.findMany({
+      where: {
+        creatorId,
+        ...(after
+          ? cursorFilter({ ledgerAt: after.ledgerAt, key: after.id }, "id")
+          : {}),
+      },
+      orderBy: [{ ledgerAt: "desc" }, { id: "desc" }],
+      take: rowsPerBatch,
+      select: {
+        id: true,
+        txHash: true,
+        fromAddress: true,
+        amount: true,
+        message: true,
+        ledgerAt: true,
+      },
+    });
+
+    if (rows.length === 0) {
+      return;
+    }
+
+    for (const row of rows) {
+      yield [
+        row.id,
+        row.txHash,
+        row.fromAddress,
+        row.amount,
+        row.message,
+        row.ledgerAt.toISOString(),
+      ]
+        .map((value) => escapeCsvValue(value))
+        .join(",") + "\n";
+    }
+
+    if (rows.length < rowsPerBatch) {
+      return;
+    }
+
+    const lastRow = rows[rows.length - 1];
+    if (!lastRow) {
+      return;
+    }
+
+    after = {
+      ledgerAt: lastRow.ledgerAt,
+      id: lastRow.id,
+    };
+  }
+}
+
+export function tipHistoryCsvStream(creatorId: string): Readable {
+  return Readable.from(streamTipHistoryCsv(creatorId));
 }
 
 // ── Public recent tips ────────────────────────────────────────────────────────

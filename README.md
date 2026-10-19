@@ -157,6 +157,7 @@ CORS_ALLOWED_ORIGINS - Comma-separated origins allowed through CORS in productio
 GET /health - Simple liveness ping
 GET /health/live - Liveness (process up, no dependency checks)
 GET /health/ready - Readiness (PostgreSQL + Redis reachable; 503 if not)
+GET /health/version - Public build metadata: package version, build commit, and configured network
 
 POST /auth/challenge - Issue one-time sign-in nonce
 POST /auth/verify - Verify signature, return JWT
@@ -215,7 +216,9 @@ GET /analytics/totals - Total tips, amount, supporters (JWT)
 GET /analytics/timeseries - Daily breakdown ?days=30 (JWT)
 GET /analytics/top-supporters- Ranked supporters ?limit=10 (JWT)
 GET /analytics/recent - Live tip feed ?limit=20&cursor=<opaque> (JWT)
+GET /analytics/export - CSV export of the creator's tip history (JWT)
 GET /analytics/collaborators - Per-recipient earnings breakdown (JWT)
+GET /notifications - Recent notifications ?limit=20&offset=0 (JWT)
 
 /analytics/recent is cursor-paginated. It takes ?limit= (1–100, default 20)
 and ?cursor=, and returns:
