@@ -12,6 +12,7 @@
 
 import { Prisma } from "@prisma/client";
 import { db } from "../../db.js";
+import { config } from "../../config.js";
 import { cacheInvalidate, cacheGet, cacheSet } from "../../redis.js";
 import { resolveJarId } from "./jar-id.js";
 
@@ -19,7 +20,19 @@ import { resolveJarId } from "./jar-id.js";
 export { jarIdForSlug, resolveJarId } from "./jar-id.js";
 
 const SLUG_REGEX = /^[a-z0-9_-]{3,32}$/;
+
+/**
+ * The sign-in placeholder every new wallet starts on: auth.service mints
+ * `user_${randomBytes(4).toString("hex")}` — user_ plus 8 hex chars — and
+ * claiming is what turns it into a real slug. claimSlug uses this as the
+ * definition of "hasn't claimed yet" (see the one-claim guard there); the
+ * format is pinned to auth.service's generation on purpose, so a creator who
+ * somehow holds anything else — even a near-miss like user_1234abc — counts
+ * as having claimed and must go through renameSlug.
+ */
+const PLACEHOLDER_SLUG_REGEX = /^user_[0-9a-f]{8}$/;
 const PROFILE_CACHE_TTL = 60; // seconds
+const MILLIS_PER_DAY = 86_400_000;
 
 /**
  * Slugs that can't be claimed by a creator.
@@ -103,11 +116,83 @@ export interface UpdateProfileInput {
   email?: string | null | undefined;
 }
 
+// ── Slug holds ────────────────────────────────────────────────────────────────
+
+/**
+ * When a hold on a released slug lapses: the release plus the configured
+ * window (CREATOR_SLUG_HOLD_DAYS, default 90 days). Purely a function of
+ * releasedAt, so an expired row is inert — nothing needs to prune it for the
+ * slug to become free again.
+ */
+function heldUntil(release: { releasedAt: Date }): Date {
+  return new Date(
+    release.releasedAt.getTime() +
+      config.creators.slugHoldDays * MILLIS_PER_DAY,
+  );
+}
+
+/**
+ * The release row behind an *active* hold on `slug`, or null when the slug
+ * was never released or the window has elapsed.
+ *
+ * A released slug used to be free the instant its owner renamed away from
+ * it, so whoever claimed next inherited every stale link, printed poster and
+ * QR code still pointing at it — and showed their own wallet to the people
+ * who meant to tip the original creator. The hold closes that gap for
+ * everyone but that previous owner, who is exempted by the caller.
+ */
+async function activeSlugHold(slug: string) {
+  const released = await db.releasedSlug.findUnique({ where: { slug } });
+  if (!released) return null;
+  if (Date.now() >= heldUntil(released).getTime()) return null;
+  return released;
+}
+
+/**
+ * Throw when `slug` sits behind an active hold that `requesterId` doesn't
+ * own. Deliberately the same 409 SLUG_TAKEN shape as an occupied slug: to
+ * every caller but the previous owner the slug *is* taken, and clients
+ * already handle that one conflict. The message says what is going on.
+ */
+async function assertSlugHoldFree(slug: string, requesterId: string) {
+  const hold = await activeSlugHold(slug);
+  if (!hold || hold.previousOwnerId === requesterId) return;
+
+  throw Object.assign(
+    new Error(
+      "This slug was released by its previous owner and is on hold until " +
+        `${heldUntil(hold).toISOString().slice(0, 10)} — ` +
+        "only they can take it until then.",
+    ),
+    { statusCode: 409, code: "SLUG_TAKEN" },
+  );
+}
+
+/**
+ * Record that `previousOwnerId` let go of `slug`, starting (or restarting)
+ * its hold window. An upsert: the table is keyed by slug, so a slug that is
+ * released → reclaimed → released again must end up with one row carrying
+ * the latest release rather than colliding on a second one.
+ */
+async function recordSlugRelease(
+  slug: string,
+  previousOwnerId: string,
+): Promise<void> {
+  const releasedAt = new Date();
+  await db.releasedSlug.upsert({
+    where: { slug },
+    create: { slug, previousOwnerId, releasedAt },
+    update: { previousOwnerId, releasedAt },
+  });
+}
+
 // ── Slug claim ────────────────────────────────────────────────────────────────
 
 /**
  * Claim a slug for an authenticated creator.
- * Fails if the slug is already taken or invalid.
+ * Fails if the slug is already taken, invalid, or held for a previous owner,
+ * or if this creator already holds a real slug (409 ALREADY_CLAIMED — the
+ * claim is the one-time transition off the sign-in placeholder).
  */
 export async function claimSlug(input: ClaimSlugInput) {
   if (!SLUG_REGEX.test(input.slug)) {
@@ -128,6 +213,13 @@ export async function claimSlug(input: ClaimSlugInput) {
 
   const jarId = resolveJarId(input.slug, input.jarId);
 
+  // Which slug, if any, this claim is about to release. First-time claimants
+  // have none; a creator switching slugs here releases the old one exactly
+  // as renameSlug does, so the hold follows the claim too.
+  const current = await db.creator.findUnique({
+    where: { id: input.creatorId },
+  });
+
   // Check availability. This pre-check handles the common case, but two
   // requests can race and both pass it before either writes — the unique
   // constraint below is what actually prevents a duplicate.
@@ -137,6 +229,30 @@ export async function claimSlug(input: ClaimSlugInput) {
       statusCode: 409,
       code: "SLUG_TAKEN",
     });
+  }
+
+  // Free of creators ≠ free: the slug may still be held for whoever last
+  // released it (previous owner excepted).
+  await assertSlugHoldFree(input.slug, input.creatorId);
+
+  // The claimant's own eligibility, checked last so the target-slug errors
+  // above keep precedence — a claim naming an occupied slug still reads
+  // SLUG_TAKEN rather than this. But with the target checks satisfied, a
+  // caller already on a real slug is refused: a claim is the one-time move
+  // off the sign-in placeholder (PLACEHOLDER_SLUG_REGEX), and a second one
+  // would point slug and jarId at values the contract has never seen — the
+  // jar registered on-chain under the old id is orphaned and tips to the new
+  // one fail JarNotFound — while also resetting splits to []. Switching
+  // slugs is renameSlug's job. A distinct code from SLUG_TAKEN: nothing is
+  // taken here, the caller has simply already claimed.
+  if (current && !PLACEHOLDER_SLUG_REGEX.test(current.slug)) {
+    throw Object.assign(
+      new Error(
+        "You have already claimed a slug — each creator claims once. " +
+          "To change it, rename via PATCH /creators/me/slug instead.",
+      ),
+      { statusCode: 409, code: "ALREADY_CLAIMED" },
+    );
   }
 
   let creator;
@@ -160,6 +276,12 @@ export async function claimSlug(input: ClaimSlugInput) {
     throw toClaimConflict(err);
   }
 
+  // Only after the write succeeded: a claim that lost its race must not put
+  // a hold on the slug it never got.
+  if (current && current.slug !== input.slug) {
+    await recordSlugRelease(current.slug, input.creatorId);
+  }
+
   await cacheInvalidate(`creator:${input.slug}`);
   return creator;
 }
@@ -176,10 +298,13 @@ export interface RenameSlugInput {
  * - Slug pattern (3–32 lowercase letters, numbers, hyphens, underscores)
  * - Reserved slug list
  * - Availability pre-check and unique constraint conflict handling (409)
+ * - The hold on a slug released by someone else (409; exempt for its
+ *   previous owner, who may rename back to their old slug)
  *
  * Leaves jarId and splits untouched: on-chain jar remains registered under
  * its original jarId, changing only where the tip page resolves.
- * Invalidates the resolver cache for both the old and new slug.
+ * Records the slug left behind as released — that record is what starts the
+ * hold — and invalidates the resolver cache for both the old and new slug.
  */
 export async function renameSlug(input: RenameSlugInput) {
   if (!SLUG_REGEX.test(input.slug)) {
@@ -215,6 +340,10 @@ export async function renameSlug(input: RenameSlugInput) {
     });
   }
 
+  // Renaming to a slug someone else released recently: held for them until
+  // the window lapses (renaming back to your own old slug is not).
+  await assertSlugHoldFree(input.slug, input.creatorId);
+
   let creator;
   try {
     creator = await db.creator.update({
@@ -225,6 +354,12 @@ export async function renameSlug(input: RenameSlugInput) {
     });
   } catch (err) {
     throw toClaimConflict(err);
+  }
+
+  // The slug just left behind is the one the hold protects. Recorded after
+  // the write so a rename that never landed doesn't hold anything.
+  if (input.slug !== oldSlug) {
+    await recordSlugRelease(oldSlug, input.creatorId);
   }
 
   await cacheInvalidate(`creator:${oldSlug}`);
@@ -380,10 +515,19 @@ export async function updateCreatorSplits(
 
 /**
  * Check if a slug is available (no auth required).
+ *
+ * `viewerId` is the authenticated caller when there is one: a held slug reads
+ * unavailable to everyone except `viewerId` being its previous owner, matching
+ * what claim and rename will let that creator do.
  */
-export async function isSlugAvailable(slug: string): Promise<boolean> {
+export async function isSlugAvailable(
+  slug: string,
+  viewerId?: string,
+): Promise<boolean> {
   if (!SLUG_REGEX.test(slug)) return false;
   if (RESERVED_SLUGS.has(slug)) return false;
   const existing = await db.creator.findUnique({ where: { slug } });
-  return !existing;
+  if (existing) return false;
+  const hold = await activeSlugHold(slug);
+  return !hold || hold.previousOwnerId === viewerId;
 }

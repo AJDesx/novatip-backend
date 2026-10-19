@@ -137,6 +137,7 @@ NETWORK_PASSPHRASE - Stellar network passphrase (default: "Test SDF Network ; Se
 USDC_CONTRACT_ID (required on mainnet) - USDC Stellar Asset Contract ID (default on testnet/local: CBIELTK6YBZJU5UP2WWQEUCYKLPU6AUNZ2BQ4WWFEIE3USCIHMXQDAMA, the testnet one)
 INDEXER_START_LEDGER - Ledger to begin indexing from (default: 0)
 INDEXER_RPC_TIMEOUT_MS - Timeout for indexer RPC calls in milliseconds (default: 5000)
+CREATOR_SLUG_HOLD_DAYS - Days a slug released by renaming (or by a claim that leaves the sign-in placeholder behind) stays reserved for its previous owner before anyone else may claim it (default: 90, 0 disables the hold)
 MAX_WEBHOOKS_PER_CREATOR - Most webhooks one creator may register (default: 5, 0 removes the cap)
 WEBHOOK_DELIVERY_RETENTION_DAYS - Prune successful deliveries older than this (default: 30, 0 disables)
 WEBHOOK_DELIVERY_FAILURE_RETENTION_DAYS - Prune failed deliveries older than this (default: 90, 0 disables)
@@ -157,6 +158,20 @@ The complete machine-readable OpenAPI 3.0 specification is served at
 [`/api/v1/openapi.json`](http://localhost:3001/api/v1/openapi.json) in local
 development. It describes every route, authentication requirement, parameter,
 request body, and response shape.
+GET /health - Simple liveness ping
+GET /health/live - Liveness (process up, no dependency checks)
+GET /health/ready - Readiness (PostgreSQL + Redis reachable; 503 if not)
+GET /health/version - Public build metadata: package version, build commit, and configured network
+
+POST /auth/challenge - Issue one-time sign-in nonce
+POST /auth/verify - Verify signature, return JWT
+GET /auth/me - Current user (JWT)
+
+GET /creators/:slug - Public creator profile
+GET /creators/check/:slug - Slug availability
+POST /creators/claim - Claim a slug (JWT)
+PATCH /creators/me - Update profile (JWT)
+PATCH /creators/me/splits - Update splits (JWT)
 
 Reserved slugs (api, admin, dashboard, onboarding, settings, login, logout,
 auth, support, help, about, terms, privacy, static, _next, novatip — see
@@ -176,6 +191,13 @@ including when two requests race for the same one — the database's unique
 constraint is the real guard, not just the pre-check. The response body's
 error.code is "SLUG_TAKEN" or "JARID_TAKEN" so callers can tell which
 field conflicted.
+
+It also returns 409 with error.code "ALREADY_CLAIMED" when the caller
+already holds a real slug: a claim is the one-time move off the sign-in
+placeholder (user_ plus 8 hex), and a second one would point the slug and
+jarId at values the contract has never seen — orphaning the jar registered
+on-chain under the old id — while resetting splits to empty. Renaming
+(PATCH /creators/me/slug) is how an existing creator switches slugs.
 
 PATCH /creators/me accepts an optional email address, used as the recipient
 for tip notifications. It is private: the public creator endpoint and
@@ -206,7 +228,9 @@ GET /analytics/totals - Total tips, amount, supporters (JWT)
 GET /analytics/timeseries - Daily breakdown ?days=30 (JWT)
 GET /analytics/top-supporters- Ranked supporters ?limit=10 (JWT)
 GET /analytics/recent - Live tip feed ?limit=20&cursor=<opaque> (JWT)
+GET /analytics/export - CSV export of the creator's tip history (JWT)
 GET /analytics/collaborators - Per-recipient earnings breakdown (JWT)
+GET /notifications - Recent notifications ?limit=20&offset=0 (JWT)
 
 /analytics/recent is cursor-paginated. It takes ?limit= (1–100, default 20)
 and ?cursor=, and returns:
@@ -438,6 +462,25 @@ reconstructed from it even by a receiver that tries.
 
 The signature is computed over this body exactly as for a tip (see Webhook
 Signatures), which is what makes the ping a real test of the receiving side.
+
+## Notifications
+
+Channel preferences live on the creator: `emailEnabled` and `webhookEnabled`,
+both booleans defaulting to true, so the migration that added them switched
+nothing off for existing creators.
+
+GET /notifications/preferences - Read both flags (JWT)
+PATCH /notifications/preferences - Switch either or both (JWT)
+
+Both answer `{ "preferences": { "emailEnabled": true, "webhookEnabled": true } }`.
+PATCH takes the same envelope with either key present, so updating one channel
+leaves the other untouched, and a key that is present but not a boolean is a
+400 rather than a write Postgres would coerce. `{ "preferences": {} }` is a
+valid no-op.
+
+The flags record the creator's choice; dispatch keeps its existing gates
+alongside them — webhooks still need their own `enabled` row, and email still
+needs an address on record (PATCH /creators/me).
 
 ## Indexer
 
