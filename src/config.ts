@@ -25,8 +25,9 @@ function optionalInt(key: string, fallback: number, min?: number): number {
   const raw = process.env[key];
   if (raw === undefined || raw.trim() === "") return fallback;
 
-  const parsed = Number.parseInt(raw, 10);
-  if (Number.isNaN(parsed)) {
+  const value = raw.trim();
+  const parsed = Number(value);
+  if (!/^[+-]?\d+$/.test(value) || !Number.isSafeInteger(parsed)) {
     throw new Error(`Env var ${key} must be an integer, got "${raw}"`);
   }
   if (min !== undefined && parsed < min) {
@@ -104,7 +105,7 @@ if (!isStellarNetwork(stellarNetwork)) {
 }
 
 export const config = {
-  port: parseInt(optional("PORT", "3001"), 10),
+  port: optionalInt("PORT", 3001),
   host: optional("HOST", "0.0.0.0"),
   nodeEnv,
 

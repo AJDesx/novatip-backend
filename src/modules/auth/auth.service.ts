@@ -20,6 +20,7 @@ import { StrKey } from "@stellar/stellar-sdk";
 import { setAuthNonce, consumeAuthNonce } from "../../redis.js";
 import { db } from "../../db.js";
 import { isValidAccountId } from "@novatip/sdk";
+import { jarIdForSlug } from "../creator/jar-id.js";
 
 /** Maximum attempts to generate an uncollided temporary slug/jarId for new creators. */
 export const MAX_CREATOR_CREATE_ATTEMPTS = 5;
@@ -119,12 +120,12 @@ export async function verifyChallenge(
     let created: Creator | null = null;
     for (let attempt = 0; attempt < MAX_CREATOR_CREATE_ATTEMPTS; attempt++) {
       try {
-        const idSuffix = randomBytes(4).toString("hex");
+        const slug = `user_${randomBytes(4).toString("hex")}`;
         created = await db.creator.create({
           data: {
             walletAddress,
-            slug: `user_${idSuffix}`,
-            jarId: `@user_${idSuffix}`,
+            slug,
+            jarId: jarIdForSlug(slug),
           },
         });
         break;

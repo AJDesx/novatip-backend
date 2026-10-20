@@ -234,6 +234,38 @@ GET /analytics/export - CSV export of the creator's tip history (JWT)
 GET /analytics/collaborators - Per-recipient earnings breakdown (JWT)
 GET /notifications - Recent notifications ?limit=20&offset=0 (JWT)
 
+### Error responses
+
+Errors handled by the global error handler use this envelope:
+
+    {
+      "error": {
+        "code": "SLUG_TAKEN",
+        "message": "That slug is already taken."
+      }
+    }
+
+The HTTP status accompanies the response (for example, a conflict is 409).
+In production, the message for any 500 response is replaced with
+"An unexpected error occurred." so internal details are not exposed; the
+original error is still logged by the server.
+
+Route-level request validation handled with Zod returns a different shape
+because routes send `error.flatten()` directly. For example, an invalid slug
+can return:
+
+    {
+      "error": {
+        "formErrors": [],
+        "fieldErrors": {
+          "slug": ["String must contain at least 3 character(s)"]
+        }
+      }
+    }
+
+Validation responses therefore have `formErrors` and `fieldErrors`, not the
+global handler's `code` and `message`.
+
 /analytics/recent is cursor-paginated. It takes ?limit= (1–100, default 20)
 and ?cursor=, and returns:
 
@@ -600,16 +632,19 @@ restarting; resetting the cursor alone does not remove them.
 
 ## Tip Notifications
 
-After each indexed tip the creator gets an email via Resend. Delivery needs
-two things: RESEND_API_KEY set on the server, and an address on the creator
-(PATCH /creators/me). Either one missing is a skip, not an error — a creator
-who only wants webhooks never sets an address, so that case logs at debug and
-returns rather than warning once per tip.
+Email delivery is supported: the Creator email field was added in
+[issue #34](https://github.com/Novatip/novatip-backend/issues/34). Sending
+requires RESEND_API_KEY on the server and an address on the creator
+(PATCH /creators/me). If either is missing, email is skipped — a creator who
+only wants webhooks does not need to provide an address.
 
 Resend reports API failures through the returned `error` rather than by
 throwing, so a rejected send is checked explicitly; the Notification row is
 written only after a send actually succeeds, and never records an email the
 provider refused.
+
+Webhook delivery failures are stored in WebhookDelivery and are not retried
+([issue #15](https://github.com/Novatip/novatip-backend/issues/15)).
 
 ## Webhook Signatures
 
