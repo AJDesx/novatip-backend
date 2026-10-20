@@ -25,16 +25,6 @@ jest.unstable_mockModule("../../db.js", () => ({
 const { sign } = await import("../../modules/webhooks/webhooks.service.js");
 
 describe("sign", () => {
-  it("matches a known HMAC-SHA256 hex digest for a fixed body and secret", () => {
-    // Independently computable: `printf '%s' '{"a":1}' | openssl dgst -sha256
-    // -hmac 'shh' -hex`. If this ever fails, the algorithm, the encoding or
-    // what gets signed has changed underneath every receiver already
-    // verifying against it.
-    expect(sign('{"a":1}', "shh")).toBe(
-      "dfb8cf3fc9778c70386e30f5e0776d37f9ee9c8756d3cbd7df0902150644358d",
-    );
-  });
-
   it("matches a known HMAC-SHA256 hex digest for a fixed body, secret, and timestamp", () => {
     // Independently computable: `printf '%s' '1729166400.{"a":1}' | openssl dgst -sha256 -hmac 'shh' -hex`.
     // Binds the timestamp into signed material as `${timestamp}.${body}` to prevent replay attacks.
@@ -64,33 +54,43 @@ describe("sign", () => {
 
   it("produces a different signature for a different secret, same body", () => {
     const body = "same body";
+    const timestamp = "1729166400";
 
-    const a = sign(body, "secret-one");
-    const b = sign(body, "secret-two");
+    const a = sign(body, "secret-one", timestamp);
+    const b = sign(body, "secret-two", timestamp);
 
     expect(a).not.toBe(b);
   });
 
   it("produces a different signature for a different body, same secret", () => {
     const secret = "same-secret";
+    const timestamp = "1729166400";
 
-    const a = sign("body-one", secret);
-    const b = sign("body-two", secret);
+    const a = sign("body-one", secret, timestamp);
+    const b = sign("body-two", secret, timestamp);
 
     expect(a).not.toBe(b);
   });
 
   it("is deterministic: the same body and secret always sign the same", () => {
-    expect(sign("stable", "secret")).toBe(sign("stable", "secret"));
+    const timestamp = "1729166400";
+    expect(sign("stable", "secret", timestamp)).toBe(
+      sign("stable", "secret", timestamp),
+    );
   });
 
   it("outputs a lowercase hex digest the sha256= header format expects", () => {
     // What dispatch and the test ping both send as
-    // X-Novatip-Signature: `sha256=${sign(body, secret)}` — asserting the
-    // raw shape here, rather than hardcoding the full header elsewhere,
-    // keeps this test from drifting if that prefix ever moves.
-    const digest = sign("payload", "secret");
+    // X-Novatip-Signature: `sha256=${sign(body, secret, timestamp)}` —
+    // asserting the raw shape here keeps the header format pinned.
+    const digest = sign("payload", "secret", "1729166400");
 
     expect(digest).toMatch(/^[0-9a-f]{64}$/);
+  });
+
+  it("requires a timestamp in its TypeScript signature", () => {
+    // @ts-expect-error The timestamp must not be omittable.
+    const withoutTimestamp: (body: string, secret: string) => string = sign;
+    expect(withoutTimestamp).toBeDefined();
   });
 });

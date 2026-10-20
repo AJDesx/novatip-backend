@@ -11,7 +11,9 @@ import {
   startDeliveryPruner,
   stopDeliveryPruner,
 } from "./modules/webhooks/retention.js";
+import { migrateWebhookSecrets } from "./modules/webhooks/webhooks.service.js";
 
+await migrateWebhookSecrets();
 const server = await buildServer();
 
 // Start the Soroban event indexer in the background
