@@ -21,6 +21,103 @@ Prerequisites: Node.js >= 20, Docker + Docker Compose
 5. Dev server: npm run dev (http://localhost:3001)
 6. Full stack: docker compose up -d
 
+### Run against a freshly deployed testnet contract
+
+The contract repository's published testnet deployment may not match the
+current contract interface. To exercise indexing against the current code,
+deploy a fresh testnet contract from
+[Novatip/novatip-contracts](https://github.com/Novatip/novatip-contracts):
+
+1. Install Stellar CLI 27.1.0 or newer and Rust, then clone the contracts
+   repository. From its root, install the Wasm target with
+   `rustup target add wasm32v1-none`.
+2. Generate and fund a testnet Stellar identity, then copy `.env.example` to
+   `.env` in the contracts repository. Set `NETWORK=testnet`, `SOURCE` to the
+   identity name, `ADMIN` to the admin address, and `USDC_TOKEN` to the testnet
+   USDC contract listed in that repository's README.
+3. Run `make deploy`. This builds and deploys the contract and writes its ID
+   to `.contract-id.testnet`. If the deploy script rejects the documented
+   testnet USDC ID, verify the ID against the contracts README and rerun with
+   `ALLOW_CUSTOM_TOKEN=1 make deploy`; this bypasses the script's token-ID
+   guard but still deploys with the `USDC_TOKEN` value you set.
+4. In this repository's `.env`, set `STELLAR_NETWORK=testnet`,
+   `SOROBAN_RPC_URL=https://soroban-testnet.stellar.org`,
+   `NETWORK_PASSPHRASE="Test SDF Network ; September 2015"`,
+   `USDC_CONTRACT_ID` to the same testnet USDC contract, and
+   `TIP_SPLITTER_CONTRACT_ID` to the ID printed by `make deploy`. Set
+   `INDEXER_START_LEDGER` to the deployment ledger if known. Otherwise, use a
+   recent ledger shortly before starting the backend (for example, the
+   current testnet ledger minus 1,000), not `0`; a fresh deployment has no
+   useful history to scan from genesis.
+5. Use the contracts repository's `scripts/create-jar.sh` to create a jar
+   whose `SLUG` matches the backend's on-chain `jarId` (claiming `alice` in the
+   backend derives `@alice`). Register/claim that creator in the backend for
+   the same wallet, then use `scripts/tip.sh` in the contracts repository to
+   send a test tip to that jar. Ensure the sender and jar recipients have the
+   required testnet USDC trustlines.
+6. Start this backend with `npm run dev`. Confirm its indexer logs the event
+   and that the tip appears in the database or analytics for the registered
+   creator.
+
+## Data Model
+
+The PostgreSQL schema is defined in `prisma/schema.prisma`. Its six models
+connect creator accounts to indexed tips and their notification and webhook
+delivery paths:
+
+- **Creator** represents a tip recipient. Its wallet address, public slug, and
+  on-chain `jarId` are unique. A creator has many tips, webhooks, and
+  notifications. `jarId` is unique because each on-chain jar must resolve to
+  exactly one creator; the slug and wallet address likewise identify a single
+  public profile and account.
+- **Tip** stores an indexed on-chain tip, including its transaction hash,
+  ledger, sender, amount, and optional message. Each tip belongs to one creator.
+  `txHash` is unique so the indexer can deduplicate events and avoid recording
+  the same transaction more than once. `amount` is stored as a string in USDC
+  stroops rather than a numeric type because the contract uses 128-bit integer
+  amounts, which can exceed the exact precision of JavaScript numbers. Keeping
+  it as a string preserves the full amount without a lossy numeric conversion.
+- **Webhook** stores a creator's target URL, HMAC signing secret, and enabled
+  state. It belongs to one creator and has many delivery-attempt records.
+- **WebhookDelivery** records an individual attempt to send a webhook,
+  including its payload, response status, success state, and attempt time. Each
+  delivery belongs to one webhook.
+- **Notification** stores a creator-facing event and its JSON payload, such as
+  a received tip or failed webhook. It belongs to one creator and may have a
+  `sentAt` timestamp when sent.
+- **IndexerCursor** stores the last processed ledger. The indexer uses it to
+  resume from the correct point after a restart; its default ID of `1` makes
+  this a single shared cursor rather than one cursor per creator.
+
+Each model's `id` is a primary key. In addition, `Creator.walletAddress`,
+`Creator.slug`, `Creator.jarId`, and `Tip.txHash` have unique constraints.
+These are enforced by the database, so they also protect against concurrent
+requests or indexer runs that race past an application-level pre-check.
+
+## Cache Behaviour
+
+Redis keys below are prefixed with `cache:` by the cache helper. Analytics
+entries are keyed by creator ID and query parameters; creator profiles use the
+public slug:
+
+| Read | Key (after `cache:` prefix) | TTL |
+|------|-----------------------------|-----|
+| Tip totals | `analytics:totals:<creatorId>` | 30 seconds |
+| Time series | `analytics:timeseries:<creatorId>:<days>` | 30 seconds |
+| Top supporters | `analytics:top:<creatorId>:<limit>` | 30 seconds |
+| Authenticated recent tips | `analytics:recent:<creatorId>:<limit>:<cursor-or-head>` | 30 seconds |
+| Collaborator earnings | `analytics:collaborators:<creatorId>` | 30 seconds |
+| Public recent tips | `analytics:public-recent:<slug>:<limit>:<cursor-or-head>` | 15 seconds |
+| Public creator profile | `creator:<slug>` | 60 seconds |
+
+Profile claim, rename, profile update, and split update invalidate the affected
+`creator:<slug>` entry (rename invalidates both old and new slugs). Analytics
+entries are not explicitly invalidated when tips are indexed or creator splits
+change; they expire naturally. A creator's dashboard aggregates can therefore
+be up to 30 seconds stale, public tip feeds up to 15 seconds stale, and a
+cached public profile up to 60 seconds stale. Updating a profile invalidates
+its profile key immediately, but does not invalidate cached analytics.
+
 ## Environment Variables
 
 Every variable below is read in src/config.ts; `npm run check:env-docs` checks
@@ -29,6 +126,8 @@ this list against that file so the two cannot drift apart again.
 DATABASE_URL (required) - PostgreSQL connection string
 JWT_SECRET (required) - Secret for signing JWTs; must be at least 32 characters (a short secret is brute-forceable)
 TIP_SPLITTER_CONTRACT_ID (required) - Deployed contract ID
+WEBHOOK_ENCRYPTION_KEY (required in production) - 32-byte AES-256-GCM key as 64 hex characters; generate with `openssl rand -hex 32`. Keep it outside the database and do not change it after webhook secrets are encrypted.
+WEBHOOK_ALLOW_PRIVATE_HOSTS - Allow webhook URLs to target private IP addresses (default: false; local development only)
 PORT - Server port (default: 3001)
 HOST - Server bind address (default: 0.0.0.0)
 NODE_ENV - development | production (default: development)
@@ -40,6 +139,7 @@ NETWORK_PASSPHRASE - Stellar network passphrase (default: "Test SDF Network ; Se
 USDC_CONTRACT_ID (required on mainnet) - USDC Stellar Asset Contract ID (default on testnet/local: CBIELTK6YBZJU5UP2WWQEUCYKLPU6AUNZ2BQ4WWFEIE3USCIHMXQDAMA, the testnet one)
 INDEXER_START_LEDGER - Ledger to begin indexing from (default: 0)
 INDEXER_RPC_TIMEOUT_MS - Timeout for indexer RPC calls in milliseconds (default: 5000)
+CREATOR_SLUG_HOLD_DAYS - Days a slug released by renaming (or by a claim that leaves the sign-in placeholder behind) stays reserved for its previous owner before anyone else may claim it (default: 90, 0 disables the hold)
 MAX_WEBHOOKS_PER_CREATOR - Most webhooks one creator may register (default: 5, 0 removes the cap)
 WEBHOOK_DELIVERY_RETENTION_DAYS - Prune successful deliveries older than this (default: 30, 0 disables)
 WEBHOOK_DELIVERY_FAILURE_RETENTION_DAYS - Prune failed deliveries older than this (default: 90, 0 disables)
@@ -54,11 +154,16 @@ QR_RATE_LIMIT - Per-IP cap on the QR endpoints, req/min (default: 10)
 APP_BASE_URL - Frontend base URL (default: http://localhost:3000)
 CORS_ALLOWED_ORIGINS - Comma-separated origins allowed through CORS in production (default: just APP_BASE_URL; ignored outside production, where any origin is allowed)
 
-## API Overview (base: /api/v1)
+## API reference
 
+The complete machine-readable OpenAPI 3.0 specification is served at
+[`/api/v1/openapi.json`](http://localhost:3001/api/v1/openapi.json) in local
+development. It describes every route, authentication requirement, parameter,
+request body, and response shape.
 GET /health - Simple liveness ping
 GET /health/live - Liveness (process up, no dependency checks)
 GET /health/ready - Readiness (PostgreSQL + Redis reachable; 503 if not)
+GET /health/version - Public build metadata: package version, build commit, and configured network
 
 POST /auth/challenge - Issue one-time sign-in nonce
 POST /auth/verify - Verify signature, return JWT
@@ -89,14 +194,29 @@ constraint is the real guard, not just the pre-check. The response body's
 error.code is "SLUG_TAKEN" or "JARID_TAKEN" so callers can tell which
 field conflicted.
 
+It also returns 409 with error.code "ALREADY_CLAIMED" when the caller
+already holds a real slug: a claim is the one-time move off the sign-in
+placeholder (user_ plus 8 hex), and a second one would point the slug and
+jarId at values the contract has never seen — orphaning the jar registered
+on-chain under the old id — while resetting splits to empty. Renaming
+(PATCH /creators/me/slug) is how an existing creator switches slugs.
+
 PATCH /creators/me accepts an optional email address, used as the recipient
 for tip notifications. It is private: the public creator endpoint and
 /resolve/:slug both read through getCreatorBySlug, whose select allowlists the
 world-readable columns and omits it. Send null to clear a stored address; omit
 the field to leave it unchanged.
 
+DELETE /creators/me permanently removes the authenticated creator's profile
+and frees their slug. It also deletes their notifications, webhooks, and
+webhook delivery history, which are account-owned operational data. Indexed
+tips are retained because they represent immutable on-chain financial history;
+their creator association is cleared so deleting the profile does not erase or
+misattribute those records. This deletion cannot remove the creator's on-chain
+jar registration.
+
 GET /qr/:slug - QR code SVG
-GET /qr/:slug/png - QR code PNG download
+GET /qr/:slug/png - QR code PNG download; optional `?width=` in pixels (64–2048, default 512)
 GET /resolve/:slug - Full tip-page data
 
 Tip URLs: the canonical tip page URL is APP_BASE_URL/:slug (no "@" prefix —
@@ -110,7 +230,9 @@ GET /analytics/totals - Total tips, amount, supporters (JWT)
 GET /analytics/timeseries - Daily breakdown ?days=30 (JWT)
 GET /analytics/top-supporters- Ranked supporters ?limit=10 (JWT)
 GET /analytics/recent - Live tip feed ?limit=20&cursor=<opaque> (JWT)
+GET /analytics/export - CSV export of the creator's tip history (JWT)
 GET /analytics/collaborators - Per-recipient earnings breakdown (JWT)
+GET /notifications - Recent notifications ?limit=20&offset=0 (JWT)
 
 ### Error responses
 
@@ -263,6 +385,19 @@ receiver's signature check is only as strong as, so anything shorter is
 rejected with 400 rather than written. The 16-character floor is the same one
 rotation enforces (see Rotating the secret).
 
+Webhook destinations must use HTTPS. `localhost`, private, loopback, link-local,
+unique-local and other reserved IP addresses are rejected at registration. The
+destination is resolved again before every delivery and ping; if any resolved
+address is private or reserved, the attempt is refused and recorded as failed.
+`WEBHOOK_ALLOW_PRIVATE_HOSTS=true` disables these address restrictions for
+local development and should remain off in production.
+
+Webhook secrets are stored as AES-256-GCM ciphertext. Set
+`WEBHOOK_ENCRYPTION_KEY` to a unique 32-byte key encoded as 64 hex characters;
+the server encrypts existing plaintext webhook secrets during startup before
+accepting requests. Back up this key securely: losing or changing it makes the
+stored secrets unusable.
+
 POST /webhooks is capped at MAX_WEBHOOKS_PER_CREATOR endpoints per creator
 (default 5). Registering beyond it returns 409 with error.code
 "WEBHOOK_LIMIT_REACHED" and a message naming the limit and the env var that
@@ -375,16 +510,36 @@ reconstructed from it even by a receiver that tries.
 The signature is computed over this body exactly as for a tip (see Webhook
 Signatures), which is what makes the ping a real test of the receiving side.
 
+## Notifications
+
+Channel preferences live on the creator: `emailEnabled` and `webhookEnabled`,
+both booleans defaulting to true, so the migration that added them switched
+nothing off for existing creators.
+
+GET /notifications/preferences - Read both flags (JWT)
+PATCH /notifications/preferences - Switch either or both (JWT)
+
+Both answer `{ "preferences": { "emailEnabled": true, "webhookEnabled": true } }`.
+PATCH takes the same envelope with either key present, so updating one channel
+leaves the other untouched, and a key that is present but not a boolean is a
+400 rather than a write Postgres would coerce. `{ "preferences": {} }` is a
+valid no-op.
+
+The flags record the creator's choice; dispatch keeps its existing gates
+alongside them — webhooks still need their own `enabled` row, and email still
+needs an address on record (PATCH /creators/me).
+
 ## Indexer
 
 Polls Soroban RPC every 6s for TipReceived events, persists to PostgreSQL,
 dispatches webhooks, sends email notifications. Resumes from IndexerCursor.
 
-For each indexed tip, the indexer persists the tip first, dispatches webhooks
-to enabled endpoints second, and attempts the creator email through Resend
-third. A failed or skipped notification does not undo a persisted tip. Each
-webhook attempt is recorded in WebhookDelivery; failed deliveries are not
-retried ([issue #15](https://github.com/Novatip/novatip-backend/issues/15)).
+### Progress status
+
+`GET /api/v1/health/indexer` reports `cursorLedger`, `chainHead`, and `gap`.
+The chain head includes `status: "known"` and its ledger when the RPC responds;
+if the RPC is unreachable it is returned as `status: "unknown"` and `gap` is
+`null`, while the persisted cursor is still reported.
 
 ### Cursor during quiet periods
 
@@ -426,6 +581,39 @@ through its highest ledger. That ledger is held back and re-fetched on the next
 poll rather than skipped — so only ledgers known to be complete are marked done.
 Persisting a tip is idempotent (upsert on txHash), but webhook and email
 dispatch are not, which is why the cursor must not linger on a handled ledger.
+
+### Reindexing from a chosen ledger
+
+The saved `IndexerCursor` takes precedence over `INDEXER_START_LEDGER` after
+the indexer has processed any ledger. To rescan from ledger `N`:
+
+1. Stop the backend and back up the database.
+2. Set `INDEXER_START_LEDGER=N` in `.env`, where `N` is the first ledger to
+   fetch. Choose a recent ledger that covers the events you need; old Soroban
+   events may no longer be available from the RPC provider.
+3. Reset the saved cursor so startup uses the configured start ledger:
+   `DELETE FROM "IndexerCursor" WHERE id = 1;`
+4. Restart the backend. It begins fetching from `N` and persists a new cursor
+   as it progresses.
+
+An already-indexed transaction is not inserted a second time: `Tip.txHash` is
+the unique key for an upsert, and an existing row is left unchanged. Replaying
+its event does still run webhook and email dispatch again; those side effects
+are not deduplicated. Consider disabling webhooks and email before a replay if
+duplicate notifications would be a problem.
+
+### Switching to a newly deployed contract
+
+Set `TIP_SPLITTER_CONTRACT_ID` to the new contract and choose a start ledger
+near its deployment as described in
+[Run against a freshly deployed testnet contract](#run-against-a-freshly-deployed-testnet-contract).
+Stop the backend and delete the cursor row before restarting, or the saved
+cursor will resume indexing at the old position. The `Tip` rows do not record
+their source contract or network, so pointing an existing database at another
+contract can mix old and new tips in the same creator's analytics. Prefer a
+separate database for the new deployment. If reusing a database, back it up
+and deliberately remove or archive the old deployment's tip rows before
+restarting; resetting the cursor alone does not remove them.
 
 ### Manual verification against testnet
 
@@ -497,28 +685,26 @@ it can only be replaced.
 
 ### Verifying a signature
 
-What is signed is the exact bytes of the HTTP request body — the raw
-`Content-Type: application/json` payload as it goes out on the wire, before
+What is signed is `${timestamp}.${rawBody}`, where `rawBody` is the exact
+`Content-Type: application/json` request body as it goes out on the wire, before
 your framework parses it. Verify against those raw bytes, not against
 `JSON.stringify(req.body)` after parsing: re-serialising a parsed object can
-reorder keys or change whitespace, which changes the bytes and breaks a
-signature that was perfectly valid on arrival. Most frameworks need to be
-told explicitly to keep the raw body around for this (Express:
+reorder keys or change whitespace, which changes the signature. Most frameworks
+need to be told explicitly to keep the raw body around for this (Express:
 `express.raw()` or `express.json({ verify })`; Fastify: `rawBody` via
 `@fastify/raw-body` or a custom `preParsing` hook).
 
 Worked example. A real tip delivery sends a body shaped like:
 
-    {"event":"tip.received","jarId":"@alice","from":"GABC2D3EFGHIJKLMNOPQRSTUVWXYZ234567890ABCDEFGHIJKLMN","amount":"2.50","amountRaw":"25000000","message":"Great work!","ledger":123456,"timestamp":"2026-10-17T12:00:00.000Z"}
+`txHash` is the Soroban transaction hash for the tip. It is part of the signed
+body, so receivers can use it to deduplicate retries and find the transaction
+on a block explorer.
 
-With the webhook's secret `whsec_3f8a9c2b1d7e4f6a8b9c0d1e2f3a4b5c`, that body
-produces:
+    {"event":"tip.received","jarId":"@alice","from":"GABC2D3EFGHIJKLMNOPQRSTUVWXYZ234567890ABCDEFGHIJKLMN","amount":"2.50","amountRaw":"25000000","message":"Great work!","ledger":123456,"timestamp":"2026-10-17T12:00:00.000Z","txHash":"a1b2c3d4..."}
 
-    X-Novatip-Signature: sha256=b8c764beeac210154df90d5a95aa8cb504bd44e20e8e64644d866cbb5ef133c3
-
-(`createHmac("sha256", secret).update(body).digest("hex")`, on the raw body
-string above — verify it yourself with the same two inputs if you want to
-check your receiver's implementation against this exact example.)
+For timestamp `1729166400` and the webhook's secret
+`whsec_3f8a9c2b1d7e4f6a8b9c0d1e2f3a4b5c`, compute the header digest with
+`createHmac("sha256", secret).update(`${timestamp}.${rawBody}`).digest("hex")`.
 
 Compare the computed digest with a constant-time comparison, not `===` or
 `!==`. A plain string comparison returns as soon as it finds the first
@@ -530,10 +716,18 @@ regardless of where (or whether) the inputs differ:
 
     import { createHmac, timingSafeEqual } from "crypto";
 
-    function isValidSignature(rawBody: Buffer, header: string | undefined, secret: string): boolean {
+    function isValidSignature(
+      rawBody: Buffer,
+      timestamp: string,
+      header: string | undefined,
+      secret: string,
+    ): boolean {
       if (!header?.startsWith("sha256=")) return false;
 
-      const expected = createHmac("sha256", secret).update(rawBody).digest("hex");
+      const expected = createHmac("sha256", secret)
+        .update(`${timestamp}.`)
+        .update(rawBody)
+        .digest("hex");
       const provided = header.slice("sha256=".length);
 
       // timingSafeEqual throws on a length mismatch rather than returning

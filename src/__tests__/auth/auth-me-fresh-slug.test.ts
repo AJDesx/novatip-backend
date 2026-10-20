@@ -67,6 +67,12 @@ jest.unstable_mockModule("../../db.js", () => ({
       findUnique: findUniqueMock,
       update: updateMock,
     },
+    // The claim below releases the initial slug; hold checks and the
+    // release upsert both run against this table.
+    releasedSlug: {
+      findUnique: jest.fn(async () => null),
+      upsert: jest.fn(async () => null),
+    },
   },
   disconnectDb: async (): Promise<void> => undefined,
 }));

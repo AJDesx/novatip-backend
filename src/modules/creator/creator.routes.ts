@@ -7,6 +7,7 @@
  * PATCH /api/v1/creators/me            — update profile (auth required)
  * PATCH /api/v1/creators/me/splits     — update on-chain splits record (auth required)
  * PATCH /api/v1/creators/me/slug       — rename slug (auth required)
+ * DELETE /api/v1/creators/me           — delete the authenticated creator profile (auth required)
  */
 
 import type { FastifyPluginAsync } from "fastify";
@@ -18,6 +19,7 @@ import {
   updateProfile,
   updateCreatorSplits,
   isSlugAvailable,
+  deleteCreator,
   type PublicCreator,
 } from "./creator.service.js";
 import { creatorEmail, httpsUrl } from "../../utils/validation.js";
@@ -42,7 +44,7 @@ const ClaimBody = z.object({
 const UpdateProfileBody = z.object({
   displayName: z.string().max(80).optional(),
   bio: z.string().max(300).optional(),
-  avatarUrl: httpsUrl.optional(),
+  avatarUrl: httpsUrl("Avatar URL").optional(),
   // Nullable so the field can be cleared; omitting it leaves it unchanged.
   email: creatorEmail.nullable().optional(),
 });
@@ -62,7 +64,20 @@ export const creatorRoutes: FastifyPluginAsync = async (app) => {
   // ── GET /check/:slug — availability ───────────────────────────────────────
   app.get("/check/:slug", async (request, reply) => {
     const { slug } = request.params as { slug: string };
-    const available = await isSlugAvailable(slug);
+
+    // The endpoint stays public, but identity matters here: a released slug
+    // is held for its previous owner, and only a token proves the caller is
+    // that owner. No token, or an invalid one, simply reads as anonymous —
+    // claim and rename still enforce the hold server-side either way.
+    let viewerId: string | undefined;
+    try {
+      await request.jwtVerify();
+      viewerId = request.user.sub;
+    } catch {
+      // Unauthenticated callers get the hold applied to everyone.
+    }
+
+    const available = await isSlugAvailable(slug, viewerId);
     return reply.send({ slug, available });
   });
 
@@ -133,6 +148,18 @@ export const creatorRoutes: FastifyPluginAsync = async (app) => {
         slug: body.data.slug,
       });
       return reply.send({ creator });
+    },
+  );
+
+  // ── DELETE /me — auth required ────────────────────────────────────────────
+  // Removes the profile, notifications, webhooks, and delivery history. Tips
+  // remain as financial history and are detached from the deleted profile.
+  app.delete(
+    "/me",
+    { onRequest: [app.authenticate] },
+    async (request, reply) => {
+      await deleteCreator(request.user.sub);
+      return reply.status(204).send();
     },
   );
 };

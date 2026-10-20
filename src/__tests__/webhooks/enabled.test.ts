@@ -107,11 +107,12 @@ describe("setWebhookEnabled", () => {
   it("leaves the secret untouched and out of the response", async () => {
     const secret = "original-secret-value-32-chars-x";
     const webhook = fake.seedWebhook({ creatorId: CREATOR, secret });
+    const storedSecret = webhook.secret;
 
     const disabled = await setWebhookEnabled(CREATOR, webhook.id, false);
     const enabled = await setWebhookEnabled(CREATOR, webhook.id, true);
 
-    expect(fake.webhooks.get(webhook.id)?.secret).toBe(secret);
+    expect(fake.webhooks.get(webhook.id)?.secret).toBe(storedSecret);
     expect(disabled).not.toHaveProperty("secret");
     expect(enabled).not.toHaveProperty("secret");
   });

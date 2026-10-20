@@ -241,6 +241,21 @@ describe("history of a dispatch that failed", () => {
     });
   });
 
+  it("includes the transaction hash in the dispatched body", async () => {
+    fake.seedCreator({ id: CREATOR, jarId: "@alice" });
+    fake.seedWebhook({ creatorId: CREATOR });
+    mockFetch.mockResolvedValue({
+      ok: true,
+      status: 200,
+      text: async () => "ok",
+    } as unknown as Response);
+
+    await dispatchWebhooks(tip);
+
+    const requestBody = String(mockFetch.mock.calls[0]?.[1]?.body);
+    expect(JSON.parse(requestBody)).toMatchObject({ txHash: tip.txHash });
+  });
+
   it("reports a null status code when the request never completed", async () => {
     fake.seedCreator({ id: CREATOR, jarId: "@alice" });
     const webhook = fake.seedWebhook({ creatorId: CREATOR });

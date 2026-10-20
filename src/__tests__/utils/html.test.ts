@@ -1,10 +1,10 @@
 /**
- * utils/html.test.ts
+ * __tests__/utils/html.test.ts
  *
  * Unit tests for escapeHtml helper (#91).
  */
 
-import { escapeHtml } from "./html.js";
+import { escapeHtml } from "../../utils/html.js";
 
 describe("escapeHtml", () => {
   it("escapes angle brackets and quotes", () => {

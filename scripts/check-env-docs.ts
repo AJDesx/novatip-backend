@@ -37,7 +37,7 @@ const readme = readFileSync(join(root, "README.md"), "utf8");
 // "optionalInt" would still match "optionalInt(" correctly here — the
 // ordering below is just the safer habit, not load-bearing for correctness.
 const CALL_RE =
-  /\b(optionalList|optionalInt|optional|require)\(\s*"([A-Z][A-Z0-9_]*)"/g;
+  /\b(optionalList|optionalBoolean|optionalInt|optional|require)\(\s*"([A-Z][A-Z0-9_]*)"/g;
 
 const vars = new Map<string, { required: boolean }>();
 for (const [, fn, key] of configSource.matchAll(CALL_RE)) {

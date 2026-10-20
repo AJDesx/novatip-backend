@@ -37,9 +37,20 @@ const updateMock = jest.fn<
   }) => Promise<FakeCreatorRow>
 >();
 const cacheInvalidateMock = jest.fn<(key: string) => Promise<void>>();
+// renameSlug queries holds before every write and records a release after a
+// successful one; both modelled here so no row is held in this file.
+const releasedFindUniqueMock =
+  jest.fn<(args: { where: { slug: string } }) => Promise<null>>();
+const releasedUpsertMock = jest.fn<(args: unknown) => Promise<unknown>>();
 
 jest.unstable_mockModule("../../db.js", () => ({
-  db: { creator: { findUnique: findUniqueMock, update: updateMock } },
+  db: {
+    creator: { findUnique: findUniqueMock, update: updateMock },
+    releasedSlug: {
+      findUnique: releasedFindUniqueMock,
+      upsert: releasedUpsertMock,
+    },
+  },
   disconnectDb: async (): Promise<void> => undefined,
 }));
 
@@ -80,6 +91,8 @@ beforeEach(() => {
   findUniqueMock.mockReset();
   updateMock.mockReset();
   cacheInvalidateMock.mockReset();
+  releasedFindUniqueMock.mockReset().mockResolvedValue(null);
+  releasedUpsertMock.mockReset();
 });
 
 describe("renameSlug validation", () => {
@@ -161,6 +174,18 @@ describe("successful renameSlug", () => {
     });
     expect(result.slug).toBe("alicia");
     expect(result.jarId).toBe("@alice");
+
+    // The slug left behind is recorded as released, timestamped, so a hold
+    // can run against it (see slug-hold.test.ts).
+    expect(releasedUpsertMock).toHaveBeenCalledWith({
+      where: { slug: "alice" },
+      create: {
+        slug: "alice",
+        previousOwnerId: CREATOR,
+        releasedAt: expect.any(Date),
+      },
+      update: { previousOwnerId: CREATOR, releasedAt: expect.any(Date) },
+    });
 
     expect(cacheInvalidateMock).toHaveBeenCalledWith("creator:alice");
     expect(cacheInvalidateMock).toHaveBeenCalledWith("creator:alicia");

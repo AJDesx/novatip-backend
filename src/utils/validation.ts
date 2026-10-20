@@ -28,19 +28,20 @@ import { z } from "zod";
  * "data:image/png;base64,..."           // data URI
  * "file:///etc/passwd"                  // local file
  */
-export const httpsUrl = z
-  .string()
-  .url({ message: "Must be a valid URL." })
-  .refine(
-    (val) => {
-      try {
-        return new URL(val).protocol === "https:";
-      } catch {
-        return false;
-      }
-    },
-    { message: "Avatar URL must use the https: scheme." },
-  );
+export const httpsUrl = (fieldName: string) =>
+  z
+    .string()
+    .url({ message: "Must be a valid URL." })
+    .refine(
+      (val) => {
+        try {
+          return new URL(val).protocol === "https:";
+        } catch {
+          return false;
+        }
+      },
+      { message: `${fieldName} must use the https: scheme.` },
+    );
 
 /**
  * A creator's contact email.

@@ -8,7 +8,17 @@
  */
 
 import { db } from "../../db.js";
+import { config } from "../../config.js";
+import { fetchLatestLedger } from "../../indexer/rpc.js";
+import { readCursor } from "../../indexer/persist.js";
 import { redis } from "../../redis.js";
+import { logger } from "../../utils/logger.js";
+
+const healthLogger = logger.child({ component: "health" });
+
+// Two seconds leaves room for a slow dependency while keeping readiness probes
+// inside the usual orchestrator timeout window.
+const PROBE_TIMEOUT_MS = 2_000;
 
 export interface DependencyStatus {
   status: "up" | "down";
@@ -24,21 +34,73 @@ export interface ReadinessReport {
   };
 }
 
+export type IndexerStatusReport = {
+  cursorLedger: number;
+  chainHead: { status: "known"; ledger: number } | { status: "unknown" };
+  gap: number | null;
+};
+
+/**
+ * Report the persisted indexer cursor alongside the current chain head.
+ * An unavailable RPC is represented as an unknown head; the cursor remains
+ * useful and the status endpoint stays available during RPC outages.
+ */
+export async function getIndexerStatus(): Promise<IndexerStatusReport> {
+  const cursorLedger = await readCursor();
+  let latestLedger: number;
+
+  try {
+    latestLedger = await fetchLatestLedger(
+      config.stellar.rpcUrl,
+      config.stellar.rpcTimeoutMs,
+    );
+  } catch (err) {
+    healthLogger.warn({ err }, "indexer status could not read chain head");
+    return {
+      cursorLedger,
+      chainHead: { status: "unknown" },
+      gap: null,
+    };
+  }
+
+  return {
+    cursorLedger,
+    chainHead: { status: "known", ledger: latestLedger },
+    gap: latestLedger - cursorLedger,
+  };
+}
+
 /**
  * Run a probe and record whether it succeeded and how long it took.
  * Never throws — a failed dependency is reported as `down`, not an error.
  */
-async function timed(probe: () => Promise<void>): Promise<DependencyStatus> {
+async function timed(
+  dependency: string,
+  probe: () => Promise<void>,
+): Promise<DependencyStatus> {
   const start = Date.now();
+  let timeout: ReturnType<typeof setTimeout> | undefined;
   try {
-    await probe();
+    await Promise.race([
+      probe(),
+      new Promise<never>((_, reject) => {
+        timeout = setTimeout(
+          () =>
+            reject(new Error(`probe timed out after ${PROBE_TIMEOUT_MS}ms`)),
+          PROBE_TIMEOUT_MS,
+        );
+      }),
+    ]);
     return { status: "up", latencyMs: Date.now() - start };
   } catch (err) {
+    healthLogger.error({ err, dependency }, "readiness probe failed");
     return {
       status: "down",
       latencyMs: Date.now() - start,
-      error: err instanceof Error ? err.message : String(err),
+      error: "Dependency probe failed.",
     };
+  } finally {
+    if (timeout !== undefined) clearTimeout(timeout);
   }
 }
 
@@ -46,7 +108,7 @@ async function timed(probe: () => Promise<void>): Promise<DependencyStatus> {
  * Probe PostgreSQL with a trivial round-trip query.
  */
 export async function checkDatabase(): Promise<DependencyStatus> {
-  return timed(async () => {
+  return timed("database", async () => {
     await db.$queryRaw`SELECT 1`;
   });
 }
@@ -55,7 +117,7 @@ export async function checkDatabase(): Promise<DependencyStatus> {
  * Probe Redis with a PING.
  */
 export async function checkRedis(): Promise<DependencyStatus> {
-  return timed(async () => {
+  return timed("redis", async () => {
     const pong = await redis.ping();
     if (pong !== "PONG") throw new Error(`unexpected ping reply: ${pong}`);
   });
