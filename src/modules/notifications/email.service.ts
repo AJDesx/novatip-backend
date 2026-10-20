@@ -4,8 +4,9 @@
  * Email notifications via Resend (https://resend.com).
  *
  * Sends a "You received a tip!" email to the creator after each indexed tip.
- * Skips quietly when RESEND_API_KEY is not configured (the local dev default)
- * or when the creator has not given an address — a creator who only wants
+ * Skips quietly when RESEND_API_KEY is not configured (the local dev default),
+ * when the creator has switched the channel off (emailEnabled is false), or
+ * when the creator has not given an address — a creator who only wants
  * webhooks is not required to.
  */
 
@@ -32,6 +33,18 @@ export async function sendTipNotification(event: TipEvent): Promise<void> {
   });
 
   if (!creator) return;
+
+  // Creator-level switch first: the channel is off, so nothing below — the
+  // address check, the send, the notification row — is attempted. A creator's
+  // preference rather than a fault, hence debug: at one line per tip a louder
+  // level would bury the logs of creators who simply chose not to be emailed.
+  if (!creator.emailEnabled) {
+    emailLogger.debug(
+      { slug: creator.slug },
+      "creator has email notifications switched off — skipping tip notification",
+    );
+    return;
+  }
 
   // Creator.email is optional, and leaving it unset is a normal choice rather
   // than a misconfiguration — a creator may want webhooks only. Debug, not

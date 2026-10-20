@@ -46,6 +46,9 @@ export interface FakeWebhook {
 export interface FakeCreator {
   id: string;
   jarId: string;
+  /** Creator-level notification switches — the real columns are NOT NULL DEFAULT true. */
+  emailEnabled: boolean;
+  webhookEnabled: boolean;
 }
 
 export interface FakeDelivery {
@@ -408,6 +411,10 @@ export function createFakeDb(): FakeDb {
       const row: FakeCreator = {
         id: creator.id,
         jarId: creator.jarId ?? `@${creator.id}`,
+        // Defaults mirror the schema's NOT NULL DEFAULT true: a seeded
+        // creator starts on both channels unless a test says otherwise.
+        emailEnabled: creator.emailEnabled ?? true,
+        webhookEnabled: creator.webhookEnabled ?? true,
       };
       creators.set(row.jarId, row);
       return row;

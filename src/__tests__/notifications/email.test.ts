@@ -5,6 +5,7 @@
  * - Includes both HTML and plain-text alternatives in the send payload.
  * - Confirms both parts carry the same amount, message, and dashboard link.
  * - Confirms the text part is not HTML-escaped.
+ * - Confirms the creator-level emailEnabled switch gates the send.
  */
 
 import { jest } from "@jest/globals";
@@ -29,6 +30,7 @@ type CreatorRecord = {
   slug: string;
   displayName?: string | null;
   email?: string | null;
+  emailEnabled: boolean;
 };
 
 const mockSend =
@@ -82,6 +84,7 @@ describe("sendTipNotification", () => {
       slug: "alice",
       displayName: "Alice",
       email: "alice@example.com",
+      emailEnabled: true,
     });
 
     await sendTipNotification(tipEvent);
@@ -124,6 +127,7 @@ describe("sendTipNotification", () => {
       slug: "bob",
       displayName: 'Bob <Admin> "The Great"',
       email: "bob@example.com",
+      emailEnabled: true,
     });
 
     const xssTip: TipEvent = {
@@ -155,6 +159,7 @@ describe("sendTipNotification", () => {
       slug: "alice",
       displayName: "Alice",
       email: "alice@example.com",
+      emailEnabled: true,
     });
 
     const tipWithoutMessage: TipEvent = {
@@ -201,6 +206,7 @@ describe("sendTipNotification", () => {
       slug: "alice",
       displayName: "Alice",
       email: null,
+      emailEnabled: true,
     });
 
     await sendTipNotification(tipEvent);
@@ -209,12 +215,44 @@ describe("sendTipNotification", () => {
     expect(mockDb.notification.create).not.toHaveBeenCalled();
   });
 
+  it("skips the send when the creator has switched the channel off (emailEnabled false)", async () => {
+    // Address on record and all — the switch alone decides.
+    mockDb.creator.findUnique.mockResolvedValue({
+      id: "creator_1",
+      slug: "alice",
+      displayName: "Alice",
+      email: "alice@example.com",
+      emailEnabled: false,
+    });
+
+    await sendTipNotification(tipEvent);
+
+    expect(mockSend).not.toHaveBeenCalled();
+    expect(mockDb.notification.create).not.toHaveBeenCalled();
+  });
+
+  it("sends when the creator has the channel on (emailEnabled true)", async () => {
+    mockDb.creator.findUnique.mockResolvedValue({
+      id: "creator_1",
+      slug: "alice",
+      displayName: "Alice",
+      email: "alice@example.com",
+      emailEnabled: true,
+    });
+
+    await sendTipNotification(tipEvent);
+
+    expect(mockSend).toHaveBeenCalledTimes(1);
+    expect(mockDb.notification.create).toHaveBeenCalledTimes(1);
+  });
+
   it("writes notification row only after a successful send", async () => {
     mockDb.creator.findUnique.mockResolvedValue({
       id: "creator_1",
       slug: "alice",
       displayName: "Alice",
       email: "alice@example.com",
+      emailEnabled: true,
     });
 
     // Successful send writes DB notification row

@@ -12,6 +12,10 @@
  * new id. These tests pin both halves: the write is scoped to the owner, and a
  * disabled webhook really does receive nothing while its secret survives.
  *
+ * The creator-level webhookEnabled switch is covered too: it gates dispatch
+ * outright when off, and the per-webhook flag underneath it still applies
+ * when it is on.
+ *
  * config.ts validates required env vars at module load, so those are set
  * before the module graph is imported.
  */
@@ -225,5 +229,93 @@ describe("dispatchWebhooks respects the flag", () => {
     // passes — nothing had to be re-registered.
     const after = mockFetch.mock.calls[1]?.[1]?.headers;
     expect(after).toEqual(before);
+  });
+});
+
+// ── The creator-level switch ─────────────────────────────────────────────────
+
+describe("dispatchWebhooks respects the creator-level webhookEnabled switch", () => {
+  const mockFetch = jest.fn<typeof fetch>();
+  const realFetch = globalThis.fetch;
+
+  beforeEach(() => {
+    mockFetch.mockReset();
+    mockFetch.mockResolvedValue({
+      ok: true,
+      status: 200,
+      text: async () => "ok",
+    } as unknown as Response);
+    globalThis.fetch = mockFetch as unknown as typeof fetch;
+  });
+
+  afterAll(() => {
+    globalThis.fetch = realFetch;
+  });
+
+  const tip = {
+    jarId: "@alice",
+    from: `G${"A".repeat(55)}`,
+    amount: 25_000_000n,
+    message: "nice work",
+    ledger: 1_234,
+    timestamp: "2026-01-01T00:00:00Z",
+    txHash: "a".repeat(64),
+  };
+
+  it("delivers when webhookEnabled is on", async () => {
+    fake.seedCreator({ id: CREATOR, jarId: "@alice", webhookEnabled: true });
+    fake.seedWebhook({
+      creatorId: CREATOR,
+      url: "https://hooks.example.com/live",
+      enabled: true,
+    });
+
+    await dispatchWebhooks(tip);
+
+    expect(mockFetch).toHaveBeenCalledTimes(1);
+  });
+
+  it("delivers nothing when webhookEnabled is off, even to an enabled webhook", async () => {
+    fake.seedCreator({ id: CREATOR, jarId: "@alice", webhookEnabled: false });
+    fake.seedWebhook({
+      creatorId: CREATOR,
+      url: "https://hooks.example.com/live",
+      enabled: true,
+    });
+
+    await dispatchWebhooks(tip);
+
+    // The creator-level switch overrides the per-webhook one: the endpoint
+    // says enabled, the creator says no.
+    expect(mockFetch).not.toHaveBeenCalled();
+    expect(fake.deliveries).toHaveLength(0);
+  });
+
+  it("keeps the per-webhook flag applying underneath the creator-level one", async () => {
+    fake.seedCreator({ id: CREATOR, jarId: "@alice", webhookEnabled: true });
+    fake.seedWebhook({
+      creatorId: CREATOR,
+      url: "https://hooks.example.com/live",
+      enabled: true,
+    });
+    fake.seedWebhook({
+      creatorId: CREATOR,
+      url: "https://hooks.example.com/paused",
+      enabled: false,
+    });
+
+    // Channel on: only the enabled endpoint receives — the per-webhook
+    // filter is untouched by the creator-level check.
+    await dispatchWebhooks(tip);
+    expect(mockFetch.mock.calls.map((call) => call[0])).toEqual([
+      "https://hooks.example.com/live",
+    ]);
+
+    // Channel off: even that enabled endpoint goes quiet — both gates must
+    // pass, and the second dispatch adds no attempt.
+    fake.seedCreator({ id: CREATOR, jarId: "@alice", webhookEnabled: false });
+    await dispatchWebhooks(tip);
+    expect(mockFetch).toHaveBeenCalledTimes(1);
+    expect(fake.deliveries).toHaveLength(1);
   });
 });
