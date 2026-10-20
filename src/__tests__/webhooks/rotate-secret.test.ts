@@ -133,12 +133,13 @@ describe("rotateWebhookSecret ownership", () => {
       creatorId: OTHER_CREATOR,
       secret: OLD_SECRET,
     });
+    const storedSecret = webhook.secret;
 
     await expect(rotateWebhookSecret(CREATOR, webhook.id)).resolves.toBeNull();
 
     // And leaves their secret alone — rotating someone else's secret would
     // break their receiver, which is a denial of service, not a leak.
-    expect(fake.webhooks.get(webhook.id)?.secret).toBe(OLD_SECRET);
+    expect(fake.webhooks.get(webhook.id)?.secret).toBe(storedSecret);
   });
 
   it("returns null for an id that does not exist", async () => {
@@ -171,7 +172,8 @@ describe("the new secret", () => {
 
     const rotated = await rotateWebhookSecret(CREATOR, webhook.id);
 
-    expect(fake.webhooks.get(webhook.id)?.secret).toBe(rotated?.secret);
+    expect(fake.webhooks.get(webhook.id)?.secret).toMatch(/^novatip:v1:/);
+    expect(fake.webhooks.get(webhook.id)?.secret).not.toBe(rotated?.secret);
   });
 
   it("differs on each rotation", async () => {
@@ -196,7 +198,8 @@ describe("the new secret", () => {
     const rotated = await rotateWebhookSecret(CREATOR, webhook.id, chosen);
 
     expect(rotated?.secret).toBe(chosen);
-    expect(fake.webhooks.get(webhook.id)?.secret).toBe(chosen);
+    expect(fake.webhooks.get(webhook.id)?.secret).toMatch(/^novatip:v1:/);
+    expect(fake.webhooks.get(webhook.id)?.secret).not.toBe(chosen);
   });
 });
 

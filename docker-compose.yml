@@ -65,6 +65,8 @@ services:
       USDC_CONTRACT_ID:          ${USDC_CONTRACT_ID:-CBIELTK6YBZJU5UP2WWQEUCYKLPU6AUNZ2BQ4WWFEIE3USCIHMXQDAMA}
       INDEXER_START_LEDGER:      ${INDEXER_START_LEDGER:-0}
       APP_BASE_URL:              http://localhost:3000
+      WEBHOOK_ENCRYPTION_KEY:    ${WEBHOOK_ENCRYPTION_KEY:-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa}
+      WEBHOOK_ALLOW_PRIVATE_HOSTS: ${WEBHOOK_ALLOW_PRIVATE_HOSTS:-true}
       RESEND_API_KEY:            ${RESEND_API_KEY:-}
       EMAIL_FROM:                ${EMAIL_FROM:-tips@novatip.xyz}
     healthcheck:
