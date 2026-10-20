@@ -9,12 +9,16 @@ const json = (description: string, bodySchema: object) => ({
 
 const response = (description: string) => ({ description });
 
-const pathParameter = (name: string, description: string) => ({
+const pathParameter = (
+  name: string,
+  description: string,
+  parameterSchema: object = { type: "string" },
+) => ({
   name,
   in: "path",
   required: true,
   description,
-  schema: { type: "string" },
+  schema: parameterSchema,
 });
 
 const queryParameter = (
@@ -71,7 +75,7 @@ function operation({
 }
 
 const validationError = json(
-  "Request parameters or body failed validation.",
+  "Path parameters, query parameters, or request body failed validation.",
   schema("ValidationErrorResponse"),
 );
 const notFound = json(
@@ -88,6 +92,16 @@ const rateLimited = json(
 );
 
 const slugParameter = pathParameter("slug", "Creator's public slug.");
+const validatedSlugParameter = pathParameter(
+  "slug",
+  "Creator's public slug: 3–32 lowercase letters, numbers, underscores, or hyphens.",
+  {
+    type: "string",
+    minLength: 3,
+    maxLength: 32,
+    pattern: "^[a-z0-9_-]{3,32}$",
+  },
+);
 const idParameter = pathParameter("id", "Resource identifier.");
 const paginationParameters = [
   queryParameter("limit", "Maximum number of results.", {
@@ -211,8 +225,8 @@ export const openApiSpecification = {
           "The public creator profile.",
           schema("PublicCreatorResponse"),
         ),
-        parameters: [slugParameter],
-        extraResponses: { "404": notFound },
+        parameters: [validatedSlugParameter],
+        extraResponses: { "400": validationError, "404": notFound },
       }),
     },
     "/creators/check/{slug}": {
@@ -282,8 +296,8 @@ export const openApiSpecification = {
       get: operation({
         summary: "Resolve the tip-page data for a creator slug",
         success: json("Creator and tip-page links.", schema("ResolveResponse")),
-        parameters: [slugParameter],
-        extraResponses: { "404": notFound },
+        parameters: [validatedSlugParameter],
+        extraResponses: { "400": validationError, "404": notFound },
       }),
     },
     "/qr/{slug}": {
@@ -293,8 +307,12 @@ export const openApiSpecification = {
           description: "QR code image.",
           content: { "image/svg+xml": { schema: { type: "string" } } },
         },
-        parameters: [slugParameter],
-        extraResponses: { "404": notFound, "429": rateLimited },
+        parameters: [validatedSlugParameter],
+        extraResponses: {
+          "400": validationError,
+          "404": notFound,
+          "429": rateLimited,
+        },
       }),
     },
     "/qr/{slug}/png": {
@@ -307,7 +325,7 @@ export const openApiSpecification = {
           },
         },
         parameters: [
-          slugParameter,
+          validatedSlugParameter,
           queryParameter(
             "width",
             "PNG image width in pixels (64–2048, default 512).",
@@ -401,7 +419,7 @@ export const openApiSpecification = {
         summary: "Get the public supporter feed",
         success: json("Page of public tips.", schema("PublicTipsResponse")),
         parameters: [
-          slugParameter,
+          validatedSlugParameter,
           queryParameter("limit", "Page size (1–50, default 20).", {
             type: "integer",
             minimum: 1,

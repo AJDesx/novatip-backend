@@ -15,11 +15,10 @@ import { db } from "../../db.js";
 import { config } from "../../config.js";
 import { cacheInvalidate, cacheGet, cacheSet } from "../../redis.js";
 import { resolveJarId } from "./jar-id.js";
+import { CREATOR_SLUG_REGEX } from "../../utils/validation.js";
 
 // Re-exported so callers keep importing the creator API from one place.
 export { jarIdForSlug, resolveJarId } from "./jar-id.js";
-
-const SLUG_REGEX = /^[a-z0-9_-]{3,32}$/;
 
 /**
  * The sign-in placeholder every new wallet starts on: auth.service mints
@@ -195,7 +194,7 @@ async function recordSlugRelease(
  * claim is the one-time transition off the sign-in placeholder).
  */
 export async function claimSlug(input: ClaimSlugInput) {
-  if (!SLUG_REGEX.test(input.slug)) {
+  if (!CREATOR_SLUG_REGEX.test(input.slug)) {
     throw Object.assign(
       new Error(
         "Slug must be 3–32 characters: lowercase letters, numbers, hyphens, underscores.",
@@ -307,7 +306,7 @@ export interface RenameSlugInput {
  * hold — and invalidates the resolver cache for both the old and new slug.
  */
 export async function renameSlug(input: RenameSlugInput) {
-  if (!SLUG_REGEX.test(input.slug)) {
+  if (!CREATOR_SLUG_REGEX.test(input.slug)) {
     throw Object.assign(
       new Error(
         "Slug must be 3–32 characters: lowercase letters, numbers, hyphens, underscores.",
@@ -524,7 +523,7 @@ export async function isSlugAvailable(
   slug: string,
   viewerId?: string,
 ): Promise<boolean> {
-  if (!SLUG_REGEX.test(slug)) return false;
+  if (!CREATOR_SLUG_REGEX.test(slug)) return false;
   if (RESERVED_SLUGS.has(slug)) return false;
   const existing = await db.creator.findUnique({ where: { slug } });
   if (existing) return false;
