@@ -533,6 +533,16 @@ underneath — a paused per-webhook `enabled` row still applies when the
 channel is on, and email still needs an address on record
 (PATCH /creators/me).
 
+Every indexed tip for a registered creator creates a `TIP_RECEIVED` row in
+`GET /notifications`, regardless of whether email is configured, enabled, or
+deliverable. `sentAt` is set only after Resend accepts the email; otherwise
+the feed row remains unsent.
+
+Redis is an optional cache for creator profiles and analytics reads. Cache
+read failures behave as misses, while cache writes and invalidations are logged
+without failing the database-backed request. If an invalidation is missed,
+the stale entry is bounded by its configured TTL.
+
 ## Indexer
 
 Polls Soroban RPC every 6s for TipReceived events, persists to PostgreSQL,
