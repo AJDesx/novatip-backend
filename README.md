@@ -126,6 +126,8 @@ this list against that file so the two cannot drift apart again.
 DATABASE_URL (required) - PostgreSQL connection string
 JWT_SECRET (required) - Secret for signing JWTs; must be at least 32 characters (a short secret is brute-forceable)
 TIP_SPLITTER_CONTRACT_ID (required) - Deployed contract ID
+WEBHOOK_ENCRYPTION_KEY (required in production) - 32-byte AES-256-GCM key as 64 hex characters; generate with `openssl rand -hex 32`. Keep it outside the database and do not change it after webhook secrets are encrypted.
+WEBHOOK_ALLOW_PRIVATE_HOSTS - Allow webhook URLs to target private IP addresses (default: false; local development only)
 PORT - Server port (default: 3001)
 HOST - Server bind address (default: 0.0.0.0)
 NODE_ENV - development | production (default: development)
@@ -231,6 +233,38 @@ GET /analytics/recent - Live tip feed ?limit=20&cursor=<opaque> (JWT)
 GET /analytics/export - CSV export of the creator's tip history (JWT)
 GET /analytics/collaborators - Per-recipient earnings breakdown (JWT)
 GET /notifications - Recent notifications ?limit=20&offset=0 (JWT)
+
+### Error responses
+
+Errors handled by the global error handler use this envelope:
+
+    {
+      "error": {
+        "code": "SLUG_TAKEN",
+        "message": "That slug is already taken."
+      }
+    }
+
+The HTTP status accompanies the response (for example, a conflict is 409).
+In production, the message for any 500 response is replaced with
+"An unexpected error occurred." so internal details are not exposed; the
+original error is still logged by the server.
+
+Route-level request validation handled with Zod returns a different shape
+because routes send `error.flatten()` directly. For example, an invalid slug
+can return:
+
+    {
+      "error": {
+        "formErrors": [],
+        "fieldErrors": {
+          "slug": ["String must contain at least 3 character(s)"]
+        }
+      }
+    }
+
+Validation responses therefore have `formErrors` and `fieldErrors`, not the
+global handler's `code` and `message`.
 
 /analytics/recent is cursor-paginated. It takes ?limit= (1–100, default 20)
 and ?cursor=, and returns:
@@ -350,6 +384,19 @@ caller-supplied secret must be at least 16 characters — it is the HMAC key a
 receiver's signature check is only as strong as, so anything shorter is
 rejected with 400 rather than written. The 16-character floor is the same one
 rotation enforces (see Rotating the secret).
+
+Webhook destinations must use HTTPS. `localhost`, private, loopback, link-local,
+unique-local and other reserved IP addresses are rejected at registration. The
+destination is resolved again before every delivery and ping; if any resolved
+address is private or reserved, the attempt is refused and recorded as failed.
+`WEBHOOK_ALLOW_PRIVATE_HOSTS=true` disables these address restrictions for
+local development and should remain off in production.
+
+Webhook secrets are stored as AES-256-GCM ciphertext. Set
+`WEBHOOK_ENCRYPTION_KEY` to a unique 32-byte key encoded as 64 hex characters;
+the server encrypts existing plaintext webhook secrets during startup before
+accepting requests. Back up this key securely: losing or changing it makes the
+stored secrets unusable.
 
 POST /webhooks is capped at MAX_WEBHOOKS_PER_CREATOR endpoints per creator
 (default 5). Registering beyond it returns 409 with error.code
@@ -588,16 +635,19 @@ restarting; resetting the cursor alone does not remove them.
 
 ## Tip Notifications
 
-After each indexed tip the creator gets an email via Resend. Delivery needs
-two things: RESEND_API_KEY set on the server, and an address on the creator
-(PATCH /creators/me). Either one missing is a skip, not an error — a creator
-who only wants webhooks never sets an address, so that case logs at debug and
-returns rather than warning once per tip.
+Email delivery is supported: the Creator email field was added in
+[issue #34](https://github.com/Novatip/novatip-backend/issues/34). Sending
+requires RESEND_API_KEY on the server and an address on the creator
+(PATCH /creators/me). If either is missing, email is skipped — a creator who
+only wants webhooks does not need to provide an address.
 
 Resend reports API failures through the returned `error` rather than by
 throwing, so a rejected send is checked explicitly; the Notification row is
 written only after a send actually succeeds, and never records an email the
 provider refused.
+
+Webhook delivery failures are stored in WebhookDelivery and are not retried
+([issue #15](https://github.com/Novatip/novatip-backend/issues/15)).
 
 ## Webhook Signatures
 
@@ -638,28 +688,26 @@ it can only be replaced.
 
 ### Verifying a signature
 
-What is signed is the exact bytes of the HTTP request body — the raw
-`Content-Type: application/json` payload as it goes out on the wire, before
+What is signed is `${timestamp}.${rawBody}`, where `rawBody` is the exact
+`Content-Type: application/json` request body as it goes out on the wire, before
 your framework parses it. Verify against those raw bytes, not against
 `JSON.stringify(req.body)` after parsing: re-serialising a parsed object can
-reorder keys or change whitespace, which changes the bytes and breaks a
-signature that was perfectly valid on arrival. Most frameworks need to be
-told explicitly to keep the raw body around for this (Express:
+reorder keys or change whitespace, which changes the signature. Most frameworks
+need to be told explicitly to keep the raw body around for this (Express:
 `express.raw()` or `express.json({ verify })`; Fastify: `rawBody` via
 `@fastify/raw-body` or a custom `preParsing` hook).
 
 Worked example. A real tip delivery sends a body shaped like:
 
-    {"event":"tip.received","jarId":"@alice","from":"GABC2D3EFGHIJKLMNOPQRSTUVWXYZ234567890ABCDEFGHIJKLMN","amount":"2.50","amountRaw":"25000000","message":"Great work!","ledger":123456,"timestamp":"2026-10-17T12:00:00.000Z"}
+`txHash` is the Soroban transaction hash for the tip. It is part of the signed
+body, so receivers can use it to deduplicate retries and find the transaction
+on a block explorer.
 
-With the webhook's secret `whsec_3f8a9c2b1d7e4f6a8b9c0d1e2f3a4b5c`, that body
-produces:
+    {"event":"tip.received","jarId":"@alice","from":"GABC2D3EFGHIJKLMNOPQRSTUVWXYZ234567890ABCDEFGHIJKLMN","amount":"2.50","amountRaw":"25000000","message":"Great work!","ledger":123456,"timestamp":"2026-10-17T12:00:00.000Z","txHash":"a1b2c3d4..."}
 
-    X-Novatip-Signature: sha256=b8c764beeac210154df90d5a95aa8cb504bd44e20e8e64644d866cbb5ef133c3
-
-(`createHmac("sha256", secret).update(body).digest("hex")`, on the raw body
-string above — verify it yourself with the same two inputs if you want to
-check your receiver's implementation against this exact example.)
+For timestamp `1729166400` and the webhook's secret
+`whsec_3f8a9c2b1d7e4f6a8b9c0d1e2f3a4b5c`, compute the header digest with
+`createHmac("sha256", secret).update(`${timestamp}.${rawBody}`).digest("hex")`.
 
 Compare the computed digest with a constant-time comparison, not `===` or
 `!==`. A plain string comparison returns as soon as it finds the first
@@ -671,10 +719,18 @@ regardless of where (or whether) the inputs differ:
 
     import { createHmac, timingSafeEqual } from "crypto";
 
-    function isValidSignature(rawBody: Buffer, header: string | undefined, secret: string): boolean {
+    function isValidSignature(
+      rawBody: Buffer,
+      timestamp: string,
+      header: string | undefined,
+      secret: string,
+    ): boolean {
       if (!header?.startsWith("sha256=")) return false;
 
-      const expected = createHmac("sha256", secret).update(rawBody).digest("hex");
+      const expected = createHmac("sha256", secret)
+        .update(`${timestamp}.`)
+        .update(rawBody)
+        .digest("hex");
       const provided = header.slice("sha256=".length);
 
       // timingSafeEqual throws on a length mismatch rather than returning

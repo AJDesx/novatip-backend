@@ -25,8 +25,9 @@ function optionalInt(key: string, fallback: number, min?: number): number {
   const raw = process.env[key];
   if (raw === undefined || raw.trim() === "") return fallback;
 
-  const parsed = Number.parseInt(raw, 10);
-  if (Number.isNaN(parsed)) {
+  const value = raw.trim();
+  const parsed = Number(value);
+  if (!/^[+-]?\d+$/.test(value) || !Number.isSafeInteger(parsed)) {
     throw new Error(`Env var ${key} must be an integer, got "${raw}"`);
   }
   if (min !== undefined && parsed < min) {
@@ -63,7 +64,30 @@ function optionalList(key: string, fallback: string[]): string[] {
     .filter((entry) => entry !== "");
 }
 
+function optionalBoolean(key: string, fallback: boolean): boolean {
+  const raw = process.env[key];
+  if (raw === undefined) return fallback;
+
+  if (raw.toLowerCase() === "true") return true;
+  if (raw.toLowerCase() === "false") return false;
+  throw new Error(`Env var ${key} must be "true" or "false", got "${raw}"`);
+}
+
 const appBaseUrl = optional("APP_BASE_URL", "http://localhost:3000");
+const nodeEnv = optional("NODE_ENV", "development");
+const webhookEncryptionKey = optional("WEBHOOK_ENCRYPTION_KEY", "");
+
+if (
+  webhookEncryptionKey !== "" &&
+  !/^[0-9a-fA-F]{64}$/.test(webhookEncryptionKey)
+) {
+  throw new Error(
+    "Env var WEBHOOK_ENCRYPTION_KEY must be exactly 64 hexadecimal characters (32 bytes)",
+  );
+}
+if (nodeEnv === "production" && webhookEncryptionKey === "") {
+  throw new Error("Missing required env var: WEBHOOK_ENCRYPTION_KEY");
+}
 
 const jwtSecretValue = require("JWT_SECRET");
 if (jwtSecretValue.length < MIN_JWT_SECRET_LENGTH) {
@@ -81,9 +105,9 @@ if (!isStellarNetwork(stellarNetwork)) {
 }
 
 export const config = {
-  port: parseInt(optional("PORT", "3001"), 10),
+  port: optionalInt("PORT", 3001),
   host: optional("HOST", "0.0.0.0"),
-  nodeEnv: optional("NODE_ENV", "development"),
+  nodeEnv,
 
   databaseUrl: require("DATABASE_URL"),
   redisUrl: optional("REDIS_URL", "redis://localhost:6379"),
@@ -140,6 +164,8 @@ export const config = {
   },
 
   webhooks: {
+    encryptionKey: webhookEncryptionKey,
+    allowPrivateHosts: optionalBoolean("WEBHOOK_ALLOW_PRIVATE_HOSTS", false),
     /**
      * How long (in ms) to wait for an endpoint to answer before timing out
      * and recording a failed delivery. Defaults to 5,000 ms (5s), giving external

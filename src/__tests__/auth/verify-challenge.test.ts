@@ -9,6 +9,7 @@
 import { jest } from "@jest/globals";
 import { Prisma } from "@prisma/client";
 import { Keypair } from "@stellar/stellar-sdk";
+import { jarIdForSlug } from "../../modules/creator/jar-id.js";
 
 process.env["DATABASE_URL"] ??= "postgresql://user:pass@localhost:5432/test";
 process.env["JWT_SECRET"] ??= "test-secret-not-used-for-signing";
@@ -145,6 +146,8 @@ describe("verifyChallenge (#88 single query and #89 slug collision handling)", (
         jarId: expect.stringMatching(/^@user_[0-9a-f]{8}$/),
       }),
     });
+    const { data } = createMock.mock.calls[0]![0];
+    expect(data.jarId).toBe(jarIdForSlug(data.slug));
   });
 
   it("retries on slug/jarId collision (P2002) and succeeds on subsequent attempt (#89)", async () => {

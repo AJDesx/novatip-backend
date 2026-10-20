@@ -20,6 +20,16 @@ import { stroopsToUsdc } from "@novatip/sdk";
 import { logger } from "../../utils/logger.js";
 import { assertWebhookLimit, webhookLimit } from "./limit.js";
 import { notifyWebhookFailure } from "../notifications/webhook-failure.service.js";
+import {
+  decryptWebhookSecret,
+  encryptWebhookSecret,
+  isEncryptedWebhookSecret,
+  parseWebhookEncryptionKey,
+} from "./secret-crypto.js";
+import {
+  assertWebhookDestinationAllowed,
+  assertWebhookUrlForRegistration,
+} from "./webhook-url.js";
 
 const webhookLogger = logger.child({ component: "webhook" });
 
@@ -61,6 +71,7 @@ interface WebhookPayload {
   message: string;
   ledger: number;
   timestamp: string;
+  txHash: string;
 }
 
 /**
@@ -128,6 +139,7 @@ export async function dispatchWebhooks(event: TipEvent): Promise<void> {
     message: event.message,
     ledger: event.ledger,
     timestamp: event.timestamp,
+    txHash: event.txHash,
   };
 
   const body = JSON.stringify(payload);
@@ -160,13 +172,18 @@ async function deliver(
   payload: DeliveryPayload,
 ): Promise<DeliveryOutcome> {
   const timestamp = Math.floor(Date.now() / 1000).toString();
-  const signature = sign(body, webhook.secret, timestamp);
 
   let statusCode: number | undefined;
   let responseText: string | undefined;
   let success = false;
 
   try {
+    await assertWebhookDestinationAllowed(webhook.url);
+    const secret = decryptWebhookSecret(
+      webhook.secret,
+      getWebhookEncryptionKey(),
+    );
+    const signature = sign(body, secret, timestamp);
     const controller = new AbortController();
     const timer = setTimeout(
       () => controller.abort(),
@@ -233,16 +250,16 @@ async function deliver(
 
 /**
  * Compute HMAC-SHA256 signature for a webhook delivery.
- * When timestamp is provided, the signed material is `${timestamp}.${body}`,
- * preventing replay attacks. If omitted, only body is signed (legacy mode).
+ * The signed material is `${timestamp}.${body}`, preventing replay attacks.
  */
 export function sign(
   body: string,
   secret: string,
-  timestamp?: string | number,
+  timestamp: string | number,
 ): string {
-  const signed = timestamp !== undefined ? `${timestamp}.${body}` : body;
-  return createHmac("sha256", secret).update(signed).digest("hex");
+  return createHmac("sha256", secret)
+    .update(`${timestamp}.${body}`)
+    .digest("hex");
 }
 
 // ── Test ping ─────────────────────────────────────────────────────────────────
@@ -322,6 +339,37 @@ export function generateWebhookSecret(): string {
   return randomBytes(SECRET_BYTES).toString("hex");
 }
 
+function getWebhookEncryptionKey(): Buffer {
+  return parseWebhookEncryptionKey(config.webhooks.encryptionKey);
+}
+
+/**
+ * Encrypt legacy webhook secrets before the server starts serving requests.
+ * The compare-and-set update makes concurrent startup migrations safe.
+ */
+export async function migrateWebhookSecrets(): Promise<number> {
+  const rows = await db.webhook.findMany({
+    select: { id: true, secret: true },
+  });
+  const legacyRows = rows.filter(
+    (row) => !isEncryptedWebhookSecret(row.secret),
+  );
+  if (legacyRows.length === 0) return 0;
+
+  const key = getWebhookEncryptionKey();
+  let migrated = 0;
+  for (const row of legacyRows) {
+    const result = await db.webhook.updateMany({
+      where: { id: row.id, secret: row.secret },
+      data: { secret: encryptWebhookSecret(row.secret, key) },
+    });
+    migrated += result.count;
+  }
+
+  webhookLogger.info({ migrated }, "encrypted legacy webhook secrets");
+  return migrated;
+}
+
 /**
  * error.code on the rejection, so clients can branch on it.
  */
@@ -363,18 +411,27 @@ export async function createWebhook(
   secret: string,
 ) {
   assertSecretLength(secret);
+  assertWebhookUrlForRegistration(url);
+  const encryptedSecret = encryptWebhookSecret(
+    secret,
+    getWebhookEncryptionKey(),
+  );
 
   const limit = webhookLimit();
 
   // No cap configured — skip the extra round trip entirely.
   if (limit === null) {
-    return db.webhook.create({ data: { creatorId, url, secret } });
+    return db.webhook.create({
+      data: { creatorId, url, secret: encryptedSecret },
+    });
   }
 
   return db.$transaction(async (tx) => {
     const existing = await tx.webhook.count({ where: { creatorId } });
     assertWebhookLimit(existing, limit);
-    return tx.webhook.create({ data: { creatorId, url, secret } });
+    return tx.webhook.create({
+      data: { creatorId, url, secret: encryptedSecret },
+    });
   });
 }
 
@@ -530,7 +587,9 @@ export async function rotateWebhookSecret(
 
   const { count } = await db.webhook.updateMany({
     where: { id: webhookId, creatorId },
-    data: { secret },
+    data: {
+      secret: encryptWebhookSecret(secret, getWebhookEncryptionKey()),
+    },
   });
 
   if (count === 0) return null;

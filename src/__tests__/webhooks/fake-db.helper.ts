@@ -19,6 +19,18 @@
  * testPathIgnorePatterns.
  */
 
+import {
+  encryptWebhookSecret,
+  parseWebhookEncryptionKey,
+} from "../../modules/webhooks/secret-crypto.js";
+
+process.env["WEBHOOK_ENCRYPTION_KEY"] ??= "a".repeat(64);
+process.env["WEBHOOK_ALLOW_PRIVATE_HOSTS"] = "true";
+
+const fakeEncryptionKey = parseWebhookEncryptionKey(
+  process.env["WEBHOOK_ENCRYPTION_KEY"],
+);
+
 // ── Row shapes ────────────────────────────────────────────────────────────────
 
 export interface FakeWebhook {
@@ -162,7 +174,7 @@ export function createFakeDb(): FakeDb {
           id: nextId("wh"),
           creatorId: data.creatorId,
           url: data.url,
-          secret: data.secret,
+          secret: encryptWebhookSecret(data.secret, fakeEncryptionKey),
           enabled: true,
           createdAt: now,
           updatedAt: now,
