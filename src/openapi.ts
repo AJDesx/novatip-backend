@@ -643,9 +643,22 @@ export const openApiSpecification = {
             ],
           },
           gap: { type: "integer", nullable: true },
+          lastSuccessfulPollAt: {
+            type: "string",
+            format: "date-time",
+            nullable: true,
+          },
+          lastError: { type: "string", nullable: true },
           ts: { type: "string", format: "date-time" },
         },
-        required: ["cursorLedger", "chainHead", "gap", "ts"],
+        required: [
+          "cursorLedger",
+          "chainHead",
+          "gap",
+          "lastSuccessfulPollAt",
+          "lastError",
+          "ts",
+        ],
       },
       ChallengeRequest: {
         type: "object",

@@ -37,6 +37,10 @@ import { logger } from "../utils/logger.js";
 import { persistTip, updateCursor, readCursor } from "./persist.js";
 import { dispatchWebhooks } from "../modules/webhooks/webhooks.service.js";
 import { sendTipNotification } from "../modules/notifications/email.service.js";
+import {
+  recordPollError,
+  recordSuccessfulPoll,
+} from "./status.js";
 
 /**
  * How often (in ms) the indexer loop polls the Soroban RPC for new TipReceived events.
@@ -223,18 +227,17 @@ async function runLoop(options?: IndexerOptions): Promise<void> {
 
       // Successful poll resets consecutive failure count
       consecutiveFailures = 0;
+      recordSuccessfulPoll();
     } catch (err) {
       consecutiveFailures++;
+      recordPollError(err);
       const backoffMs = calculatePollBackoff(consecutiveFailures);
       indexerLogger.error(
         { err, startLedger, consecutiveFailures, backoffMs },
         "poll error",
       );
-      await sleep(backoffMs);
-      indexerLogger.error({ err, startLedger }, "poll error");
       if (!running) break;
-      // Back off slightly on error to avoid hammering the RPC
-      await interruptibleSleep(pollIntervalMs * 2);
+      await interruptibleSleep(backoffMs);
       continue;
     }
 

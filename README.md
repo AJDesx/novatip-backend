@@ -163,6 +163,7 @@ request body, and response shape.
 GET /health - Simple liveness ping
 GET /health/live - Liveness (process up, no dependency checks)
 GET /health/ready - Readiness (PostgreSQL + Redis reachable; 503 if not)
+GET /health/indexer - Indexer cursor, chain gap, last successful poll time, and last poll error
 GET /health/version - Public build metadata: package version, build commit, and configured network
 
 POST /auth/challenge - Issue one-time sign-in nonce
@@ -539,7 +540,10 @@ dispatches webhooks, sends email notifications. Resumes from IndexerCursor.
 
 ### Progress status
 
-`GET /api/v1/health/indexer` reports `cursorLedger`, `chainHead`, and `gap`.
+`GET /api/v1/health/indexer` reports `cursorLedger`, `chainHead`, and `gap`,
+along with `lastSuccessfulPollAt` (an ISO timestamp or `null` before any poll
+succeeds) and `lastError` (the most recent poll error message, or `null` when
+the last poll succeeded).
 The chain head includes `status: "known"` and its ledger when the RPC responds;
 if the RPC is unreachable it is returned as `status: "unknown"` and `gap` is
 `null`, while the persisted cursor is still reported.
