@@ -64,12 +64,16 @@ if (missing.length > 0) {
   for (const key of missing) console.error(`  ${key}`);
 }
 if (unmarkedRequired.length > 0) {
-  console.error('These required env vars are not marked "(required)" in README.md:');
+  console.error(
+    'These required env vars are not marked "(required)" in README.md:',
+  );
   for (const key of unmarkedRequired) console.error(`  ${key}`);
 }
 
 if (missing.length > 0 || unmarkedRequired.length > 0) {
   process.exitCode = 1;
 } else {
-  console.info(`All ${vars.size} env vars config.ts reads are documented in README.md.`);
+  console.info(
+    `All ${vars.size} env vars config.ts reads are documented in README.md.`,
+  );
 }
