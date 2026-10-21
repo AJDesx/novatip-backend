@@ -174,6 +174,13 @@ export const config = {
      * without exceeding Soroban RPC getEvents page limits or overwhelming memory.
      */
     pollLimit: optionalInt("INDEXER_POLL_LIMIT", 200, 1),
+
+    /**
+     * Days to retain unowned tips before pruning. Tips with no creatorId may
+     * belong to another application or have been sent before a jar was claimed.
+     * Defaults to 90 days; 0 disables pruning.
+     */
+    unownedTipRetentionDays: optionalInt("UNOWNED_TIP_RETENTION_DAYS", 90, 0),
   },
 
   webhooks: {

@@ -259,9 +259,6 @@ export async function claimSlug(input: ClaimSlugInput) {
   try {
     creator = await db.creator.update({
       where: { id: input.creatorId },
-      // Optional fields are spread in only when supplied. Prisma reads a missing
-      // key as "leave unchanged", but exactOptionalPropertyTypes rejects passing
-      // an explicit undefined to say the same thing.
       data: {
         slug: input.slug,
         jarId,
@@ -276,8 +273,16 @@ export async function claimSlug(input: ClaimSlugInput) {
     throw toClaimConflict(err);
   }
 
-  // Only after the write succeeded: a claim that lost its race must not put
-  // a hold on the slug it never got.
+  await db.tip.updateMany({
+    where: {
+      jarId,
+      creatorId: null,
+    },
+    data: {
+      creatorId: creator.id,
+    },
+  });
+
   if (current && current.slug !== input.slug) {
     await recordSlugRelease(current.slug, input.creatorId);
   }
