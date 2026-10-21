@@ -49,6 +49,15 @@ function isStellarNetwork(value: string): value is StellarNetwork {
 // guessable key.
 const MIN_JWT_SECRET_LENGTH = 32;
 
+function validateJwtExpiresIn(value: string): void {
+  const validPattern = /^\d+[smhdwy]$/;
+  if (!validPattern.test(value)) {
+    throw new Error(
+      `Env var JWT_EXPIRES_IN must be a valid time span (e.g. "7d", "1h", "30m"), got "${value}"`,
+    );
+  }
+}
+
 /**
  * Read a comma-separated list setting, trimming each entry and dropping
  * empty ones (a trailing comma or stray whitespace shouldn't produce a ""
@@ -97,6 +106,9 @@ if (jwtSecretValue.length < MIN_JWT_SECRET_LENGTH) {
   );
 }
 
+const jwtExpiresIn = optional("JWT_EXPIRES_IN", "7d");
+validateJwtExpiresIn(jwtExpiresIn);
+
 const stellarNetwork = optional("STELLAR_NETWORK", "testnet");
 if (!isStellarNetwork(stellarNetwork)) {
   throw new Error(
@@ -113,6 +125,7 @@ export const config = {
   redisUrl: optional("REDIS_URL", "redis://localhost:6379"),
 
   jwtSecret: jwtSecretValue,
+  jwtExpiresIn,
 
   stellar: {
     network: stellarNetwork,
