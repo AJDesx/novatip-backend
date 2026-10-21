@@ -125,6 +125,7 @@ this list against that file so the two cannot drift apart again.
 
 DATABASE_URL (required) - PostgreSQL connection string
 JWT_SECRET (required) - Secret for signing JWTs; must be at least 32 characters (a short secret is brute-forceable)
+JWT_EXPIRES_IN - JWT expiration time in time span format (default: 7d; examples: "30m", "12h", "7d")
 TIP_SPLITTER_CONTRACT_ID (required) - Deployed contract ID
 WEBHOOK_ENCRYPTION_KEY (required in production) - 32-byte AES-256-GCM key as 64 hex characters; generate with `openssl rand -hex 32`. Keep it outside the database and do not change it after webhook secrets are encrypted.
 WEBHOOK_ALLOW_PRIVATE_HOSTS - Allow webhook URLs to target private IP addresses (default: false; local development only)
