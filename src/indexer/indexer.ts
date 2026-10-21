@@ -230,11 +230,8 @@ async function runLoop(options?: IndexerOptions): Promise<void> {
         { err, startLedger, consecutiveFailures, backoffMs },
         "poll error",
       );
-      await sleep(backoffMs);
-      indexerLogger.error({ err, startLedger }, "poll error");
       if (!running) break;
-      // Back off slightly on error to avoid hammering the RPC
-      await interruptibleSleep(pollIntervalMs * 2);
+      await interruptibleSleep(backoffMs);
       continue;
     }
 
